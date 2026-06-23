@@ -1,228 +1,521 @@
-use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
-use std::time::SystemTime;
 use rusqlite::{params, Connection};
-use crate::{get_copilot_dir, parse_usage_entries};
+use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-/// 取得 SQLite 資料庫連接，資料庫存放於 ~/.copilot/copilot_cli_token_insights.db
+pub fn get_claude_dir() -> Result<PathBuf, String> {
+    if let Ok(val) = std::env::var("CLAUDE_DIR") {
+        let p = PathBuf::from(val);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let p = home.join(".claude");
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    Err("無法定位 ~/.claude 資料夾，請設定 CLAUDE_DIR 環境變數。".to_string())
+}
+
 pub fn get_db_conn() -> Result<Connection, String> {
-    let copilot_dir = get_copilot_dir()?;
-    let db_path = copilot_dir.join("copilot_cli_token_insights.db");
+    let claude_dir = get_claude_dir()?;
+    let db_path = claude_dir.join("claude_code_token_insights.db");
     Connection::open(&db_path).map_err(|e| format!("無法開啟資料庫: {}", e))
 }
 
-/// 初始化資料庫，建立資料表與必要的索引
 pub fn init_db(conn: &Connection) -> Result<(), String> {
-    // 建立 usage_entries 表，用於儲存 Token 請求紀錄
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS usage_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
             date TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            session_name TEXT,
-            transcript_path TEXT,
-            cwd TEXT,
-            version TEXT,
-            turn_no INTEGER NOT NULL,
+            start_time TEXT NOT NULL,
+            project_path TEXT,
             model TEXT,
-            model_id TEXT,
-            
-            -- Token 統計 (原始累計)
-            tokens_input INTEGER,
-            tokens_output INTEGER,
-            tokens_cache_read INTEGER,
-            tokens_reasoning INTEGER,
-            tokens_total INTEGER,
-            
-            -- Delta Token 統計 (本次請求增量)
-            delta_input INTEGER,
-            delta_output INTEGER,
-            delta_cache_read INTEGER,
-            delta_reasoning INTEGER,
-            delta_total INTEGER,
-            
-            -- 成本與時間
-            duration_ms INTEGER,
-            premium_requests INTEGER
-        )",
-        [],
-    ).map_err(|e| format!("建立 usage_entries 表失敗: {}", e))?;
-
-    // 建立唯一聯合約束，防止重複同步時寫入重複數據
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uidx_session_turn ON usage_entries(session_id, turn_no)",
-        [],
-    ).map_err(|e| format!("建立唯一索引 uidx_session_turn 失敗: {}", e))?;
-
-    // 建立日期索引以加速日明細與月報查詢
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_usage_date ON usage_entries(date)",
-        [],
-    ).map_err(|e| format!("建立日期索引 idx_usage_date 失敗: {}", e))?;
-
-    // 建立同步狀態記錄表
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS sync_state (
-            filename TEXT PRIMARY KEY,
-            last_synced_size INTEGER NOT NULL,
-            last_synced_time INTEGER NOT NULL
-        )",
-        [],
-    ).map_err(|e| format!("建立 sync_state 表失敗: {}", e))?;
-
-    Ok(())
+            first_prompt TEXT,
+            duration_minutes REAL,
+            user_message_count INTEGER,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
+        CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
+    ",
+    )
+    .map_err(|e| format!("建立資料表失敗: {}", e))
 }
 
-/// 增量同步使用量日誌檔到 SQLite 中
-pub fn sync_usage_logs(conn: &Connection) -> Result<(), String> {
-    let copilot_dir = get_copilot_dir()?;
-    let usage_dir = copilot_dir.join("usage");
-    if !usage_dir.exists() {
-        return Ok(());
+fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
     }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
 
-    let entries = fs::read_dir(usage_dir).map_err(|e| format!("無法讀取 usage 目錄: {}", e))?;
+fn is_skill_text(text: &str) -> bool {
+    if text.starts_with("Base directory for this skill:") {
+        return true;
+    }
+    // Skill instructions are structured markdown docs (# Title + ## Section)
+    if text.starts_with("# ") && truncate_str(text, 500).contains("\n## ") {
+        return true;
+    }
+    false
+}
 
-    for entry in entries.flatten() {
-        let file_type = match entry.file_type() {
-            Ok(t) => t,
+fn parse_date_from_iso(iso: &str) -> String {
+    iso.get(..10).unwrap_or("").to_string()
+}
+
+/// Find the JSONL file for a session across all project directories
+pub fn find_session_jsonl(claude_dir: &Path, session_id: &str) -> Option<PathBuf> {
+    let projects_dir = claude_dir.join("projects");
+    if let Ok(entries) = fs::read_dir(&projects_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let jsonl = path.join(format!("{}.jsonl", session_id));
+                if jsonl.exists() {
+                    return Some(jsonl);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Read the JSONL and compute per-session token totals (taking the max usage per unique uuid)
+pub fn compute_session_tokens(jsonl_path: &Path) -> (i64, i64, i64, i64, String) {
+    let content = match fs::read_to_string(jsonl_path) {
+        Ok(c) => c,
+        Err(_) => return (0, 0, 0, 0, String::new()),
+    };
+
+    // Each assistant message may be streamed as multiple lines with the same uuid.
+    // We take the last line per uuid (it has the final usage).
+    let mut uuid_to_usage: std::collections::HashMap<String, Value> =
+        std::collections::HashMap::new();
+    let mut model = String::new();
+
+    for line in content.lines() {
+        let obj: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
             Err(_) => continue,
         };
-
-        if !file_type.is_file() {
+        let t = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if t != "assistant" {
             continue;
         }
-
-        let filename = entry.file_name().to_string_lossy().into_owned();
-        if !filename.starts_with("usage-") || !filename.ends_with(".jsonl") {
-            continue;
-        }
-
-        // 解析檔名中的日期 YYYY-MM-DD
-        let date_str = filename
-            .trim_start_matches("usage-")
-            .trim_end_matches(".jsonl")
+        let uuid = obj
+            .get("uuid")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
             .to_string();
+        if uuid.is_empty() {
+            continue;
+        }
+        if model.is_empty() || model == "<synthetic>" {
+            if let Some(m) = obj
+                .get("message")
+                .and_then(|m| m.get("model"))
+                .and_then(|v| v.as_str())
+            {
+                if m != "<synthetic>" {
+                    model = m.to_string();
+                }
+            }
+        }
+        if let Some(usage) = obj.get("message").and_then(|m| m.get("usage")) {
+            uuid_to_usage.insert(uuid, usage.clone());
+        }
+    }
 
-        let filepath = entry.path();
+    let mut input: i64 = 0;
+    let mut output: i64 = 0;
+    let mut cache_creation: i64 = 0;
+    let mut cache_read: i64 = 0;
 
-        // 查詢該檔案上一次同步時的大小 (Byte Offset)
-        let last_synced_size: u64 = conn
-            .query_row(
-                "SELECT last_synced_size FROM sync_state WHERE filename = ?",
-                params![filename],
-                |row| row.get(0),
-            )
-            .unwrap_or(0u64);
+    for usage in uuid_to_usage.values() {
+        input += usage
+            .get("input_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        output += usage
+            .get("output_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        cache_creation += usage
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        cache_read += usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+    }
 
-        let mut file = File::open(&filepath).map_err(|e| format!("無法開啟日誌檔 {}: {}", filename, e))?;
-        let metadata = file.metadata().map_err(|e| format!("無法取得檔案資訊 {}: {}", filename, e))?;
-        let current_size = metadata.len();
+    (input, output, cache_creation, cache_read, model)
+}
 
-        // 若檔案被截斷或重置，則從頭開始同步
-        let start_pos = if current_size < last_synced_size {
-            0
-        } else {
-            last_synced_size
-        };
+fn load_pricing() -> Vec<(String, f64, f64, f64, f64)> {
+    let mut rules = Vec::new();
+    let p = PathBuf::from("pricing.csv");
+    let content = match fs::read_to_string(&p) {
+        Ok(c) => c,
+        Err(_) => return rules,
+    };
+    for line in content.lines().skip(1) {
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() < 7 {
+            continue;
+        }
+        let name = parts[0].trim().to_lowercase();
+        let input: f64 = parts[3].trim().parse().unwrap_or(0.0);
+        let cache_read: f64 = parts[4].trim().parse().unwrap_or(0.0);
+        let cache_write: f64 = parts[5].trim().parse().unwrap_or(0.0);
+        let output: f64 = parts[6].trim().parse().unwrap_or(0.0);
+        rules.push((name, input, cache_read, cache_write, output));
+    }
+    rules
+}
 
-        // 有新資料寫入才進行同步
-        if current_size > start_pos {
-            file.seek(SeekFrom::Start(start_pos)).map_err(|e| format!("Seek 失敗 {}: {}", filename, e))?;
-            let mut buffer = Vec::new();
-            file.read_to_end(&mut buffer).map_err(|e| format!("讀取檔案失敗 {}: {}", filename, e))?;
+fn compute_cost(model: &str, input: i64, output: i64, cache_creation: i64, cache_read: i64) -> f64 {
+    let pricing = load_pricing();
+    let model_lower = model.to_lowercase().replace(' ', "-");
+    let rule = pricing.iter().find(|(name, ..)| {
+        let name_normalized = name.replace(' ', "-");
+        model_lower.contains(&name_normalized)
+    });
+    if let Some((_, input_price, cache_read_price, cache_write_price, output_price)) = rule {
+        let cost = (input as f64 * input_price
+            + output as f64 * output_price
+            + cache_creation as f64 * cache_write_price
+            + cache_read as f64 * cache_read_price)
+            / 1_000_000.0;
+        return cost;
+    }
+    0.0
+}
 
-            // 尋找最後一個完整的換行符，避免解析到寫入一半的行
-            let mut read_len = buffer.len();
-            while read_len > 0 && buffer[read_len - 1] != b'\n' {
-                read_len -= 1;
+pub fn sync_session_meta(conn: &Connection) -> Result<usize, String> {
+    let claude_dir = get_claude_dir()?;
+    let mut synced = 0;
+
+    // Phase 1: Sync from session-meta JSON files (fast path, has pre-computed metadata)
+    let meta_dir = claude_dir.join("usage-data").join("session-meta");
+    if let Ok(entries) = fs::read_dir(&meta_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
             }
 
-            if read_len > 0 {
-                let new_content = String::from_utf8_lossy(&buffer[..read_len]);
-                let parsed_entries = parse_usage_entries(&new_content);
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let meta: Value = match serde_json::from_str(&content) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
 
-                if parsed_entries.is_empty() {
+            let session_id = match meta.get("session_id").and_then(|v| v.as_str()) {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sessions WHERE session_id = ?1",
+                    params![session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            if exists {
+                continue;
+            }
+
+            let start_time = meta
+                .get("start_time")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if start_time.is_empty() {
+                continue;
+            }
+            let date = parse_date_from_iso(&start_time);
+
+            let project_path = meta
+                .get("project_path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let first_prompt = meta
+                .get("first_prompt")
+                .and_then(|v| v.as_str())
+                .map(|s| truncate_str(s, 500).to_string());
+            let duration_minutes = meta.get("duration_minutes").and_then(|v| v.as_f64());
+            let user_message_count = meta.get("user_message_count").and_then(|v| v.as_i64());
+            let meta_input = meta
+                .get("input_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let meta_output = meta
+                .get("output_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let (jsonl_input, jsonl_output, cache_creation, cache_read, model_from_jsonl) =
+                if let Some(jsonl_path) = find_session_jsonl(&claude_dir, &session_id) {
+                    compute_session_tokens(&jsonl_path)
+                } else {
+                    (0, 0, 0, 0, String::new())
+                };
+
+            let (final_input, final_output) = if jsonl_input > 0 || jsonl_output > 0 {
+                (jsonl_input, jsonl_output)
+            } else {
+                (meta_input, meta_output)
+            };
+
+            let total = final_input + final_output + cache_creation + cache_read;
+            let model = if model_from_jsonl.is_empty() {
+                String::new()
+            } else {
+                model_from_jsonl
+            };
+            let cost = compute_cost(
+                &model,
+                final_input,
+                final_output,
+                cache_creation,
+                cache_read,
+            );
+
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions
+                 (session_id, date, start_time, project_path, model, first_prompt,
+                  duration_minutes, user_message_count,
+                  input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                  total_tokens, cost_usd)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                params![
+                    session_id,
+                    date,
+                    start_time,
+                    project_path,
+                    model,
+                    first_prompt,
+                    duration_minutes,
+                    user_message_count,
+                    final_input,
+                    final_output,
+                    cache_creation,
+                    cache_read,
+                    total,
+                    cost
+                ],
+            )
+            .map_err(|e| format!("Insert session failed: {}", e))?;
+
+            synced += 1;
+        }
+    }
+
+    // Phase 2: Scan JSONL files directly (for sessions without session-meta)
+    let projects_dir = claude_dir.join("projects");
+    if let Ok(proj_entries) = fs::read_dir(&projects_dir) {
+        for proj_entry in proj_entries.flatten() {
+            let proj_path = proj_entry.path();
+            if !proj_path.is_dir() {
+                continue;
+            }
+
+            let jsonl_entries = match fs::read_dir(&proj_path) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            for jsonl_entry in jsonl_entries.flatten() {
+                let jsonl_path = jsonl_entry.path();
+                if jsonl_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                     continue;
                 }
 
-                // 啟動手動交易 (Transaction) 進行批次寫入以追求極致效能
-                conn.execute("BEGIN TRANSACTION", []).map_err(|e| format!("Transaction BEGIN 失敗: {}", e))?;
+                let session_id = match jsonl_path.file_stem().and_then(|s| s.to_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
 
-                let mut success = true;
-                for entry in &parsed_entries {
-                    let tokens = entry.tokens.as_ref();
-                    let delta = entry.delta_tokens.as_ref();
-                    let cost = entry.cost.as_ref();
+                // Extract metadata directly from JSONL
+                let content = match fs::read_to_string(&jsonl_path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
 
-                    // 使用 INSERT OR IGNORE 確保若 turn 已存在則略過不重複插入
-                    let insert_res = conn.execute(
-                        "INSERT OR IGNORE INTO usage_entries (
-                            timestamp, date, session_id, session_name, transcript_path, cwd, version, turn_no, model, model_id,
-                            tokens_input, tokens_output, tokens_cache_read, tokens_reasoning, tokens_total,
-                            delta_input, delta_output, delta_cache_read, delta_reasoning, delta_total,
-                            duration_ms, premium_requests
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        params![
-                            entry.timestamp,
-                            date_str,
-                            entry.session_id,
-                            entry.session_name.as_deref(),
-                            entry.transcript_path.as_deref(),
-                            entry.cwd.as_deref(),
-                            entry.version.as_deref(),
-                            entry.turn_no as i64,
-                            entry.model.as_deref(),
-                            entry.model_id.as_deref(),
-                            tokens.map(|t| t.input as i64),
-                            tokens.map(|t| t.output as i64),
-                            tokens.and_then(|t| t.cache_read.map(|v| v as i64)),
-                            tokens.and_then(|t| t.reasoning.map(|v| v as i64)),
-                            tokens.map(|t| t.total as i64),
-                            delta.map(|t| t.input as i64),
-                            delta.map(|t| t.output as i64),
-                            delta.and_then(|t| t.cache_read.map(|v| v as i64)),
-                            delta.and_then(|t| t.reasoning.map(|v| v as i64)),
-                            delta.map(|t| t.total as i64),
-                            cost.and_then(|c| c.total_api_duration_ms.map(|d| d as i64)),
-                            cost.and_then(|c| c.total_premium_requests.map(|r| r as i64))
-                        ],
-                    );
+                let mut start_time = String::new();
+                let mut first_prompt: Option<String> = None;
+                let mut user_count: i64 = 0;
+                let mut model = String::new();
+                let mut cwd: Option<String> = None;
+                let mut uuid_to_usage: std::collections::HashMap<String, Value> =
+                    std::collections::HashMap::new();
 
-                    if let Err(e) = insert_res {
-                        eprintln!("寫入資料庫失敗: {}", e);
-                        success = false;
-                        break;
-                    }
-                }
+                for line in content.lines() {
+                    let obj: Value = match serde_json::from_str(line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let t = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-                if success {
-                    let now = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
-
-                    // 記錄本次同步完畢後的檔案大小位置與時間
-                    let update_state_res = conn.execute(
-                        "INSERT OR REPLACE INTO sync_state (filename, last_synced_size, last_synced_time) VALUES (?, ?, ?)",
-                        params![filename, (start_pos + read_len as u64) as i64, now],
-                    );
-
-                    if update_state_res.is_ok() {
-                        if let Err(e) = conn.execute("COMMIT TRANSACTION", []) {
-                            eprintln!("Transaction COMMIT 失敗: {}", e);
-                            let _ = conn.execute("ROLLBACK TRANSACTION", []);
+                    // First timestamp is session start
+                    if start_time.is_empty() {
+                        if let Some(ts) = obj.get("timestamp").and_then(|v| v.as_str()) {
+                            start_time = ts.to_string();
                         }
-                    } else {
-                        let _ = conn.execute("ROLLBACK TRANSACTION", []);
                     }
-                } else {
-                    let _ = conn.execute("ROLLBACK TRANSACTION", []);
+
+                    match t {
+                        "system" => {
+                            if cwd.is_none() {
+                                if let Some(c) = obj.get("cwd").and_then(|v| v.as_str()) {
+                                    cwd = Some(c.to_string());
+                                }
+                            }
+                        }
+                        "user" => {
+                            if let Some(msg) = obj.get("message") {
+                                if let Some(content_arr) =
+                                    msg.get("content").and_then(|c| c.as_array())
+                                {
+                                    for block in content_arr {
+                                        if block.get("type").and_then(|v| v.as_str())
+                                            == Some("text")
+                                        {
+                                            user_count += 1;
+                                            if first_prompt.is_none() {
+                                                let text = block
+                                                    .get("text")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                if !is_skill_text(text) {
+                                                    first_prompt =
+                                                        Some(truncate_str(text, 500).to_string());
+                                                }
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        "assistant" => {
+                            let uuid = obj
+                                .get("uuid")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if uuid.is_empty() {
+                                continue;
+                            }
+                            if model.is_empty() || model == "<synthetic>" {
+                                if let Some(m) = obj
+                                    .get("message")
+                                    .and_then(|m| m.get("model"))
+                                    .and_then(|v| v.as_str())
+                                {
+                                    if m != "<synthetic>" {
+                                        model = m.to_string();
+                                    }
+                                }
+                            }
+                            if let Some(usage) = obj.get("message").and_then(|m| m.get("usage")) {
+                                uuid_to_usage.insert(uuid, usage.clone());
+                            }
+                        }
+                        _ => {}
+                    }
                 }
+
+                if start_time.is_empty() {
+                    continue;
+                }
+
+                // Skip non-Claude sessions (e.g., Codex CLI, other tools sharing ~/.claude/projects/)
+                if !model.is_empty() && !model.starts_with("claude-") {
+                    continue;
+                }
+
+                let date = parse_date_from_iso(&start_time);
+
+                let project_path = cwd;
+
+                let mut input: i64 = 0;
+                let mut output: i64 = 0;
+                let mut cache_creation: i64 = 0;
+                let mut cache_read: i64 = 0;
+                for usage in uuid_to_usage.values() {
+                    input += usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    output += usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    cache_creation += usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    cache_read += usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                }
+
+                let total = input + output + cache_creation + cache_read;
+                let cost = compute_cost(&model, input, output, cache_creation, cache_read);
+
+                conn.execute(
+                    "INSERT OR REPLACE INTO sessions
+                     (session_id, date, start_time, project_path, model, first_prompt,
+                      duration_minutes, user_message_count,
+                      input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                      total_tokens, cost_usd)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                    params![
+                        session_id,
+                        date,
+                        start_time,
+                        project_path,
+                        model,
+                        first_prompt,
+                        None::<f64>, // duration_minutes unknown from JSONL
+                        user_count,
+                        input,
+                        output,
+                        cache_creation,
+                        cache_read,
+                        total,
+                        cost
+                    ],
+                )
+                .map_err(|e| format!("Insert session (jsonl) failed: {}", e))?;
+
+                synced += 1;
             }
         }
     }
 
-    Ok(())
+    Ok(synced)
 }

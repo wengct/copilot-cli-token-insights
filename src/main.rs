@@ -5,37 +5,33 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     collections::HashMap,
-    fs::File,
+    fs::{self, File},
     io::{BufRead, BufReader},
     path::PathBuf,
 };
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
-
 use rusqlite::params;
 mod db;
 
 #[tokio::main]
 async fn main() {
-    // 初始化 SQLite 資料庫並進行第一次增量同步
     if let Ok(conn) = db::get_db_conn() {
         if let Err(e) = db::init_db(&conn) {
-            eprintln!("❌ 初始化 SQLite 資料庫失敗: {}", e);
-        } else if let Err(e) = db::sync_usage_logs(&conn) {
-            eprintln!("❌ 初次同步日誌檔到 SQLite 失敗: {}", e);
+            eprintln!("初始化 SQLite 失敗: {}", e);
+        } else if let Err(e) = db::sync_session_meta(&conn) {
+            eprintln!("初次同步 session-meta 失敗: {}", e);
         } else {
-            println!("✅ SQLite 資料庫已成功載入並完成增量同步！");
+            println!("SQLite 已完成增量同步！");
         }
     } else {
-        eprintln!("❌ 無法連結到 SQLite 資料庫，請檢查 ~/.copilot 是否存在或設定 COPILOT_DIR");
+        eprintln!("無法連接 SQLite，請確認 ~/.claude 是否存在或設定 CLAUDE_DIR");
     }
 
-    // 建立 Axum 路由
     let app = Router::new()
-        // API 路由
         .route("/api/dates", get(get_available_dates))
         .route("/api/setup-info", get(get_setup_info))
         .route("/api/usage/:date", get(get_usage_details))
@@ -44,223 +40,94 @@ async fn main() {
         .route("/api/monthly/:year_month", get(get_monthly_details))
         .route("/api/pricing", get(get_pricing))
         .route("/api/sync", get(trigger_manual_sync))
-        // 靜態檔案路由： fallback 到 static/index.html，並將所有 / 請求導向 static 目錄
         .nest_service("/static", ServeDir::new("static"))
         .fallback_service(ServeDir::new("static"))
         .layer(CorsLayer::permissive());
 
-    // 監聽本地 3000 Port
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("🚀 GitHub Copilot CLI Token Insights Dashboard is running on: http://localhost:3000");
-    
+    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    println!("Claude Code Token Insights running at: http://localhost:{}", port);
     axum::serve(listener, app).await.unwrap();
 }
 
-/// 獲取 .copilot 的基準路徑
-/// 1. 優先使用環境變數 `COPILOT_DIR`
-/// 2. 其次使用主目錄下的 `~/.copilot`
-fn get_copilot_dir() -> Result<PathBuf, String> {
-    if let Ok(val) = std::env::var("COPILOT_DIR") {
-        let p = PathBuf::from(val);
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-
-    if let Some(home) = dirs::home_dir() {
-        let p = home.join(".copilot");
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-
-    // 備用方案：偵測 WSL 下 /home/chenting/.copilot
-    let backup = PathBuf::from("/home/chenting/.copilot");
-    if backup.exists() {
-        return Ok(backup);
-    }
-
-    Err("無法定位 .copilot 資料夾，請設定 COPILOT_DIR 環境變數。".to_string())
-}
-
+// =========================================================================
+// GET /api/setup-info
+// =========================================================================
 #[derive(Serialize)]
 struct SetupInfoResponse {
-    workspace_dir: String,
-    script_path: String,
-    copilot_dir: String,
-    copilot_dir_exists: bool,
-    home_dir: String,
+    claude_dir: String,
+    claude_dir_exists: bool,
 }
 
 async fn get_setup_info() -> impl IntoResponse {
-    let workspace_dir = match std::env::current_dir() {
-        Ok(dir) => dir.to_string_lossy().into_owned(),
-        Err(_) => "".to_string(),
-    };
-
-    let script_path = if !workspace_dir.is_empty() {
-        let mut p = PathBuf::from(&workspace_dir);
-        p.push("shell");
-        p.push("statusline-token.sh");
-        p.to_string_lossy().into_owned()
-    } else {
-        "".to_string()
-    };
-
-    let home_dir_path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/user"));
-    let home_dir_str = home_dir_path.to_string_lossy().into_owned();
-
-    let copilot_dir_path = home_dir_path.join(".copilot");
-    let copilot_dir_exists = copilot_dir_path.exists();
-    let copilot_dir_str = copilot_dir_path.to_string_lossy().into_owned();
-
-    Json(SetupInfoResponse {
-        workspace_dir,
-        script_path,
-        copilot_dir: copilot_dir_str,
-        copilot_dir_exists,
-        home_dir: home_dir_str,
-    })
-}
-
-
-/// 解析使用量日誌檔案，相容單行 JSONL 與多行美化（Prettified）JSON 格式
-fn parse_usage_entries(content: &str) -> Vec<UsageEntry> {
-    let mut entries: Vec<UsageEntry> = Vec::new();
-    let mut current_obj = String::new();
-    let mut in_object = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        // 1. 先嘗試單行解析（相容標準 JSONL）
-        if !in_object && trimmed.starts_with('{') && trimmed.ends_with('}') {
-            match serde_json::from_str::<UsageEntry>(trimmed) {
-                Ok(entry) => {
-                    entries.push(entry);
-                    continue;
-                }
-                Err(_) => {
-                    // 若失敗則嘗試進入多行解析邏輯
-                }
-            }
-        }
-
-        // 2. 多行解析邏輯
-        if !in_object {
-            if trimmed.starts_with('{') {
-                in_object = true;
-                current_obj.clear();
-                current_obj.push_str(line);
-                current_obj.push('\n');
-            }
-        } else {
-            current_obj.push_str(line);
-            current_obj.push('\n');
-
-            // 判斷是否為根閉合大括號 `}`（無空格/縮排）
-            let is_root_close = line.trim_end() == "}" && !line.starts_with(' ') && !line.starts_with('\t');
-            if is_root_close {
-                match serde_json::from_str::<UsageEntry>(&current_obj) {
-                    Ok(entry) => entries.push(entry),
-                    Err(e) => {
-                        eprintln!("解析日誌項錯誤 (跳過): {}", e);
-                    }
-                }
-                in_object = false;
-                current_obj.clear();
-            }
-        }
-    }
-    entries
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/user"));
+    let claude_dir_path = home.join(".claude");
+    let claude_dir_exists = claude_dir_path.exists();
+    let claude_dir = std::env::var("CLAUDE_DIR")
+        .unwrap_or_else(|_| claude_dir_path.to_string_lossy().into_owned());
+    Json(SetupInfoResponse { claude_dir, claude_dir_exists })
 }
 
 // =========================================================================
-// API 1: 列出所有可用的日誌日期
+// GET /api/dates
 // =========================================================================
-
 #[derive(Serialize)]
-struct DateListResponse {
-    dates: Vec<String>,
-}
+struct DateListResponse { dates: Vec<String> }
 
 async fn get_available_dates() -> impl IntoResponse {
-    // 在讀取前做一次增量同步以確保資料最新
     let _ = tokio::task::spawn_blocking(|| {
-        if let Ok(conn) = db::get_db_conn() {
-            let _ = db::sync_usage_logs(&conn);
-        }
+        if let Ok(conn) = db::get_db_conn() { let _ = db::sync_session_meta(&conn); }
     }).await;
 
     let res: Result<Vec<String>, String> = tokio::task::spawn_blocking(|| {
         let conn = db::get_db_conn()?;
-        let mut stmt = conn.prepare("SELECT DISTINCT date FROM usage_entries ORDER BY date DESC")
-            .map_err(|e| e.to_string())?;
-        
-        let dates_iter = stmt.query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        
-        let mut dates = Vec::new();
-        for d in dates_iter {
-            if let Ok(date) = d {
-                dates.push(date);
-            }
-        }
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT date FROM sessions ORDER BY date DESC"
+        ).map_err(|e| e.to_string())?;
+        let dates = stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .flatten().collect();
         Ok(dates)
-    }).await.unwrap_or_else(|_| Err("執行緒執行失敗".to_string()));
+    }).await.unwrap_or_else(|_| Err("執行緒失敗".to_string()));
 
     match res {
         Ok(dates) => Json(DateListResponse { dates }).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
     }
 }
 
 // =========================================================================
-// API 2: 獲取特定日期的使用量與 Token 狀況
+// GET /api/usage/:date
 // =========================================================================
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct TokenStats {
-    input: u64,
-    output: u64,
-    cache_read: Option<u64>,
-    cache_write: Option<u64>,
-    reasoning: Option<u64>,
-    total: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct ContextStats {
-    current_context_tokens: Option<u64>,
-    displayed_context_limit: Option<u64>,
-    current_context_used_percentage: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct CostStats {
-    total_api_duration_ms: Option<f64>,
-    total_duration_ms: Option<f64>,
-    total_premium_requests: Option<f64>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct UsageEntry {
-    timestamp: String,
+#[derive(Serialize, Clone)]
+struct SessionSummary {
     session_id: String,
-    session_name: Option<String>,
-    transcript_path: Option<String>,
-    cwd: Option<String>,
-    version: Option<String>,
-    turn_no: u32,
-    model: Option<String>,
-    model_id: Option<String>,
-    tokens: Option<TokenStats>,
-    delta_tokens: Option<TokenStats>,
-    context: Option<ContextStats>,
-    cost: Option<CostStats>,
+    date: String,
+    start_time: String,
+    project_path: Option<String>,
+    model: String,
+    first_prompt: Option<String>,
+    duration_minutes: Option<f64>,
+    user_message_count: Option<i64>,
+    total_input_tokens: i64,
+    total_output_tokens: i64,
+    total_cache_creation_tokens: i64,
+    total_cache_read_tokens: i64,
+    total_tokens: i64,
+    cost_usd: f64,
+}
+
+#[derive(Serialize)]
+struct DaySummary {
+    total_sessions: usize,
+    total_tokens: i64,
+    total_input_tokens: i64,
+    total_output_tokens: i64,
+    total_cache_creation_tokens: i64,
+    total_cache_read_tokens: i64,
+    total_cost_usd: f64,
+    total_duration_minutes: f64,
 }
 
 #[derive(Serialize)]
@@ -268,414 +135,67 @@ struct UsageDetailsResponse {
     date: String,
     summary: DaySummary,
     sessions: Vec<SessionSummary>,
-    raw_entries: Vec<UsageEntry>,
-}
-
-#[derive(Debug, Clone)]
-struct PricingRule {
-    model_name: String,
-    input_price: f64,       // USD per 1M tokens
-    cache_input_price: f64, // USD per 1M tokens
-    output_price: f64,      // USD per 1M tokens
-}
-
-#[derive(Serialize)]
-struct PricingEntry {
-    model_name: String,
-    deployment_type: String,
-    unit: String,
-    input_price: f64,
-    cache_input_price: f64,
-    output_price: f64,
-    batch_api_price: String,
-}
-
-fn load_pricing_rules() -> Vec<PricingRule> {
-    let mut rules = Vec::new();
-    let file_path = PathBuf::from("pricing.csv");
-    if let Ok(file) = File::open(&file_path) {
-        let reader = BufReader::new(file);
-        let mut lines = reader.lines();
-        if let Some(Ok(_header)) = lines.next() {
-            for line in lines.flatten() {
-                let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() >= 7 {
-                    let input_price = parts[3].trim().parse::<f64>().unwrap_or(0.0);
-                    let cache_input_price = parts[4].trim().parse::<f64>().unwrap_or(0.0);
-                    let output_price = parts[5].trim().parse::<f64>().unwrap_or(0.0);
-                    rules.push(PricingRule {
-                        model_name: parts[0].trim().to_string(),
-                        input_price,
-                        cache_input_price,
-                        output_price,
-                    });
-                }
-            }
-        }
-    }
-    
-    // If loading fails or is empty, provide hardcoded defaults matching the CSV
-    if rules.is_empty() {
-        rules = vec![
-            PricingRule { model_name: "GPT-5.5".to_string(), input_price: 5.0, cache_input_price: 0.50, output_price: 30.0 },
-            PricingRule { model_name: "GPT-5.4 (<272k)".to_string(), input_price: 2.50, cache_input_price: 0.25, output_price: 15.0 },
-            PricingRule { model_name: "GPT-5.4 (>272k)".to_string(), input_price: 5.0, cache_input_price: 0.50, output_price: 22.50 },
-            PricingRule { model_name: "GPT-5.4-mini".to_string(), input_price: 0.75, cache_input_price: 0.08, output_price: 4.50 },
-            PricingRule { model_name: "GPT-5.3-Codex".to_string(), input_price: 1.75, cache_input_price: 0.18, output_price: 14.0 },
-        ];
-    }
-    rules
-}
-
-fn calculate_cost(rules: &[PricingRule], model_name: &str, input_tokens: u64, output_tokens: u64, cache_read_tokens: u64) -> f64 {
-    let model = model_name.to_lowercase();
-    let mut selected_rule = None;
-
-    if model.contains("gpt-5.5") {
-        selected_rule = rules.iter().find(|r| r.model_name.to_lowercase().contains("gpt-5.5"));
-    } else if model.contains("gpt-5.4-mini") || model.contains("gpt-5.4 mini") {
-        selected_rule = rules.iter().find(|r| r.model_name.to_lowercase().contains("gpt-5.4-mini"));
-    } else if model.contains("gpt-5.4") {
-        if input_tokens > 272_000 {
-            selected_rule = rules.iter().find(|r| r.model_name.contains(">272k"));
-        } else {
-            selected_rule = rules.iter().find(|r| r.model_name.contains("<272k"));
-        }
-        if selected_rule.is_none() {
-            selected_rule = rules.iter().find(|r| r.model_name.to_lowercase().contains("gpt-5.4"));
-        }
-    } else if model.contains("gpt-5.3-codex") || model.contains("gpt-5.3") {
-        selected_rule = rules.iter().find(|r| r.model_name.to_lowercase().contains("gpt-5.3"));
-    }
-
-    let rule = selected_rule.unwrap_or_else(|| {
-        rules.iter().find(|r| r.model_name.to_lowercase().contains("gpt-5.3"))
-            .unwrap_or(&rules[rules.len() - 1])
-    });
-
-    let uncached_input = if input_tokens >= cache_read_tokens {
-        input_tokens - cache_read_tokens
-    } else {
-        0
-    };
-
-    let cost = (uncached_input as f64 * rule.input_price 
-        + cache_read_tokens as f64 * rule.cache_input_price 
-        + output_tokens as f64 * rule.output_price) / 1_000_000.0;
-        
-    cost
-}
-
-async fn get_pricing() -> impl IntoResponse {
-    let mut entries = Vec::new();
-    let file_path = PathBuf::from("pricing.csv");
-    if let Ok(file) = File::open(&file_path) {
-        let reader = BufReader::new(file);
-        let mut lines = reader.lines();
-        if let Some(Ok(_header)) = lines.next() {
-            for line in lines.flatten() {
-                let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() >= 7 {
-                    let input_price = parts[3].trim().parse::<f64>().unwrap_or(0.0);
-                    let cache_input_price = parts[4].trim().parse::<f64>().unwrap_or(0.0);
-                    let output_price = parts[5].trim().parse::<f64>().unwrap_or(0.0);
-                    entries.push(PricingEntry {
-                        model_name: parts[0].trim().to_string(),
-                        deployment_type: parts[1].trim().to_string(),
-                        unit: parts[2].trim().to_string(),
-                        input_price,
-                        cache_input_price,
-                        output_price,
-                        batch_api_price: parts[6].trim().to_string(),
-                    });
-                }
-            }
-        }
-    }
-    
-    if entries.is_empty() {
-        entries = vec![
-            PricingEntry { model_name: "GPT-5.5".to_string(), deployment_type: "Global".to_string(), unit: "1M Tokens".to_string(), input_price: 5.0, cache_input_price: 0.50, output_price: 30.0, batch_api_price: "N/A".to_string() },
-            PricingEntry { model_name: "GPT-5.4 (<272k)".to_string(), deployment_type: "Global".to_string(), unit: "1M Tokens".to_string(), input_price: 2.50, cache_input_price: 0.25, output_price: 15.0, batch_api_price: "N/A".to_string() },
-            PricingEntry { model_name: "GPT-5.4 (>272k)".to_string(), deployment_type: "Global".to_string(), unit: "1M Tokens".to_string(), input_price: 5.0, cache_input_price: 0.50, output_price: 22.50, batch_api_price: "1.25/0.13/7.50".to_string() },
-            PricingEntry { model_name: "GPT-5.4-mini".to_string(), deployment_type: "Global".to_string(), unit: "1M Tokens".to_string(), input_price: 0.75, cache_input_price: 0.08, output_price: 4.50, batch_api_price: "N/A".to_string() },
-            PricingEntry { model_name: "GPT-5.3-Codex".to_string(), deployment_type: "Global".to_string(), unit: "1M Tokens".to_string(), input_price: 1.75, cache_input_price: 0.18, output_price: 14.0, batch_api_price: "N/A".to_string() },
-        ];
-    }
-
-    Json(entries).into_response()
-}
-
-#[derive(Serialize, Default)]
-struct DaySummary {
-    total_sessions: usize,
-    total_tokens: u64,
-    total_input_tokens: u64,
-    total_output_tokens: u64,
-    total_reasoning_tokens: u64,
-    total_cache_read_tokens: u64,
-    total_duration_ms: u64,
-    total_requests: u64,
-    total_cost_usd: f64,
-}
-
-#[derive(Serialize)]
-struct SessionSummary {
-    session_id: String,
-    session_name: String,
-    cwd: String,
-    model: String,
-    total_tokens: u64,
-    total_input_tokens: u64,
-    total_output_tokens: u64,
-    total_cache_read_tokens: u64,
-    total_reasoning_tokens: u64,
-    max_turn_no: u32,
-    timestamp: String,
-    duration_ms: u64,
-    cost_usd: f64,
 }
 
 async fn get_usage_details(Path(date): Path<String>) -> impl IntoResponse {
-    // 確保資料最新
-    let _ = tokio::task::spawn_blocking(|| {
-        if let Ok(conn) = db::get_db_conn() {
-            let _ = db::sync_usage_logs(&conn);
-        }
-    }).await;
-
     let date_clone = date.clone();
-    let entries_res: Result<Vec<UsageEntry>, String> = tokio::task::spawn_blocking(move || {
+    let res: Result<Vec<SessionSummary>, String> = tokio::task::spawn_blocking(move || {
         let conn = db::get_db_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT 
-                timestamp, session_id, session_name, transcript_path, cwd, version, turn_no, model, model_id,
-                tokens_input, tokens_output, tokens_cache_read, tokens_reasoning, tokens_total,
-                delta_input, delta_output, delta_cache_read, delta_reasoning, delta_total,
-                duration_ms, premium_requests
-             FROM usage_entries WHERE date = ? ORDER BY timestamp ASC"
+            "SELECT session_id, date, start_time, project_path, model, first_prompt,
+                    duration_minutes, user_message_count,
+                    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+                    total_tokens, cost_usd
+             FROM sessions WHERE date = ?1 ORDER BY start_time ASC"
         ).map_err(|e| e.to_string())?;
-
-        let entries_iter = stmt.query_map(params![date_clone], |row| {
-            let tokens_input: Option<u64> = row.get::<_, Option<i64>>(9)?.map(|v| v as u64);
-            let tokens_output: Option<u64> = row.get::<_, Option<i64>>(10)?.map(|v| v as u64);
-            let tokens_cache_read: Option<u64> = row.get::<_, Option<i64>>(11)?.map(|v| v as u64);
-            let tokens_reasoning: Option<u64> = row.get::<_, Option<i64>>(12)?.map(|v| v as u64);
-            let tokens_total: Option<u64> = row.get::<_, Option<i64>>(13)?.map(|v| v as u64);
-
-            let tokens = if let (Some(input), Some(output), Some(total)) = (tokens_input, tokens_output, tokens_total) {
-                Some(TokenStats {
-                    input,
-                    output,
-                    cache_read: tokens_cache_read,
-                    cache_write: None,
-                    reasoning: tokens_reasoning,
-                    total,
-                })
-            } else {
-                None
-            };
-
-            let delta_input: Option<u64> = row.get::<_, Option<i64>>(14)?.map(|v| v as u64);
-            let delta_output: Option<u64> = row.get::<_, Option<i64>>(15)?.map(|v| v as u64);
-            let delta_cache_read: Option<u64> = row.get::<_, Option<i64>>(16)?.map(|v| v as u64);
-            let delta_reasoning: Option<u64> = row.get::<_, Option<i64>>(17)?.map(|v| v as u64);
-            let delta_total: Option<u64> = row.get::<_, Option<i64>>(18)?.map(|v| v as u64);
-
-            let delta_tokens = if let (Some(input), Some(output), Some(total)) = (delta_input, delta_output, delta_total) {
-                Some(TokenStats {
-                    input,
-                    output,
-                    cache_read: delta_cache_read,
-                    cache_write: None,
-                    reasoning: delta_reasoning,
-                    total,
-                })
-            } else {
-                None
-            };
-
-            let duration_ms: Option<f64> = row.get::<_, Option<i64>>(19)?.map(|v| v as f64);
-            let premium_requests: Option<f64> = row.get::<_, Option<i64>>(20)?.map(|v| v as f64);
-
-            let cost = if duration_ms.is_some() || premium_requests.is_some() {
-                Some(CostStats {
-                    total_api_duration_ms: duration_ms,
-                    total_duration_ms: None,
-                    total_premium_requests: premium_requests,
-                })
-            } else {
-                None
-            };
-
-            Ok(UsageEntry {
-                timestamp: row.get(0)?,
-                session_id: row.get(1)?,
-                session_name: row.get(2).ok(),
-                transcript_path: row.get(3).ok(),
-                cwd: row.get(4).ok(),
-                version: row.get(5).ok(),
-                turn_no: row.get::<_, i64>(6)? as u32,
-                model: row.get(7).ok(),
-                model_id: row.get(8).ok(),
-                tokens,
-                delta_tokens,
-                context: None,
-                cost,
+        let sessions: Vec<SessionSummary> = stmt.query_map(params![date_clone], |row| {
+            Ok(SessionSummary {
+                session_id: row.get(0)?,
+                date: row.get(1)?,
+                start_time: row.get(2)?,
+                project_path: row.get(3)?,
+                model: row.get::<_,Option<String>>(4)?.unwrap_or_default(),
+                first_prompt: row.get(5)?,
+                duration_minutes: row.get(6)?,
+                user_message_count: row.get(7)?,
+                total_input_tokens: row.get(8)?,
+                total_output_tokens: row.get(9)?,
+                total_cache_creation_tokens: row.get(10)?,
+                total_cache_read_tokens: row.get(11)?,
+                total_tokens: row.get(12)?,
+                cost_usd: row.get(13)?,
             })
-        }).map_err(|e| e.to_string())?;
+        }).map_err(|e| e.to_string())?
+        .flatten().collect();
+        Ok(sessions)
+    }).await.unwrap_or_else(|_| Err("執行緒失敗".to_string()));
 
-        let mut entries = Vec::new();
-        for entry in entries_iter {
-            if let Ok(e) = entry {
-                entries.push(e);
+    match res {
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
+        Ok(sessions) => {
+            if sessions.is_empty() {
+                return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "找不到該日期的資料"}))).into_response();
             }
+            let total_sessions = sessions.len();
+            let total_tokens: i64 = sessions.iter().map(|s| s.total_tokens).sum();
+            let total_input_tokens: i64 = sessions.iter().map(|s| s.total_input_tokens).sum();
+            let total_output_tokens: i64 = sessions.iter().map(|s| s.total_output_tokens).sum();
+            let total_cache_creation_tokens: i64 = sessions.iter().map(|s| s.total_cache_creation_tokens).sum();
+            let total_cache_read_tokens: i64 = sessions.iter().map(|s| s.total_cache_read_tokens).sum();
+            let total_cost_usd: f64 = sessions.iter().map(|s| s.cost_usd).sum();
+            let total_duration_minutes: f64 = sessions.iter().filter_map(|s| s.duration_minutes).sum();
+            let summary = DaySummary {
+                total_sessions, total_tokens, total_input_tokens, total_output_tokens,
+                total_cache_creation_tokens, total_cache_read_tokens, total_cost_usd, total_duration_minutes,
+            };
+            Json(UsageDetailsResponse { date, summary, sessions }).into_response()
         }
-        Ok(entries)
-    }).await.unwrap_or_else(|_| Err("執行緒執行失敗".to_string()));
-
-    let entries = match entries_res {
-        Ok(e) => e,
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": err }))).into_response(),
-    };
-
-    if entries.is_empty() {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "找不到指定日期的使用日誌。" }))).into_response();
     }
-
-    // 整理當日摘要指標
-    let mut summary = DaySummary::default();
-    let mut sessions_map: HashMap<String, Vec<UsageEntry>> = HashMap::new();
-
-    for entry in &entries {
-        if let Some(ref tokens) = entry.delta_tokens {
-            summary.total_tokens += tokens.total;
-            summary.total_input_tokens += tokens.input;
-            summary.total_output_tokens += tokens.output;
-            summary.total_reasoning_tokens += tokens.reasoning.unwrap_or(0);
-            summary.total_cache_read_tokens += tokens.cache_read.unwrap_or(0);
-        } else if let Some(ref tokens) = entry.tokens {
-            if entry.turn_no == 1 {
-                summary.total_tokens += tokens.total;
-                summary.total_input_tokens += tokens.input;
-                summary.total_output_tokens += tokens.output;
-                summary.total_reasoning_tokens += tokens.reasoning.unwrap_or(0);
-                summary.total_cache_read_tokens += tokens.cache_read.unwrap_or(0);
-            }
-        }
-
-        let sid = entry.session_id.clone();
-        sessions_map.entry(sid).or_default().push(entry.clone());
-    }
-
-    summary.total_sessions = sessions_map.len();
-
-    let pricing_rules = load_pricing_rules();
-
-    // 整理每個 Session 的統計
-    let mut sessions_summary = Vec::new();
-    for (session_id, s_entries) in sessions_map {
-        let last_entry = s_entries
-            .iter()
-            .max_by_key(|e| e.turn_no)
-            .cloned()
-            .unwrap_or_else(|| s_entries[0].clone());
-
-        let session_tokens = s_entries
-            .iter()
-            .map(|e| e.delta_tokens.as_ref().map(|t| t.total).unwrap_or(0))
-            .sum::<u64>();
-
-        let session_input_tokens = s_entries
-            .iter()
-            .map(|e| e.delta_tokens.as_ref().map(|t| t.input).unwrap_or(0))
-            .sum::<u64>();
-
-        let session_output_tokens = s_entries
-            .iter()
-            .map(|e| e.delta_tokens.as_ref().map(|t| t.output).unwrap_or(0))
-            .sum::<u64>();
-
-        let session_cache_read = s_entries
-            .iter()
-            .map(|e| e.delta_tokens.as_ref().and_then(|t| t.cache_read).unwrap_or(0))
-            .sum::<u64>();
-
-        let session_reasoning = s_entries
-            .iter()
-            .map(|e| e.delta_tokens.as_ref().and_then(|t| t.reasoning).unwrap_or(0))
-            .sum::<u64>();
-
-        let session_duration = last_entry
-            .cost
-            .as_ref()
-            .and_then(|c| c.total_api_duration_ms)
-            .unwrap_or(0.0) as u64;
-
-        let session_requests = last_entry
-            .cost
-            .as_ref()
-            .and_then(|c| c.total_premium_requests)
-            .unwrap_or(0.0) as u64;
-
-        summary.total_duration_ms += session_duration;
-        summary.total_requests += session_requests;
-
-        let total_cache_read_tokens = if session_tokens > 0 {
-            session_cache_read
-        } else {
-            last_entry.tokens.as_ref().and_then(|t| t.cache_read).unwrap_or(0)
-        };
-
-        let total_reasoning_tokens = if session_tokens > 0 {
-            session_reasoning
-        } else {
-            last_entry.tokens.as_ref().and_then(|t| t.reasoning).unwrap_or(0)
-        };
-
-        let total_input_tokens = if session_tokens > 0 { session_input_tokens } else { last_entry.tokens.as_ref().map(|t| t.input).unwrap_or(0) };
-        let total_output_tokens = if session_tokens > 0 { session_output_tokens } else { last_entry.tokens.as_ref().map(|t| t.output).unwrap_or(0) };
-
-        let cost_usd = calculate_cost(
-            &pricing_rules,
-            &last_entry.model.clone().unwrap_or_else(|| "Unknown Model".to_string()),
-            total_input_tokens,
-            total_output_tokens,
-            total_cache_read_tokens,
-        );
-        summary.total_cost_usd += cost_usd;
-
-        sessions_summary.push(SessionSummary {
-            session_id,
-            session_name: last_entry.session_name.unwrap_or_else(|| "Start Coding Session".to_string()),
-            cwd: last_entry.cwd.unwrap_or_default(),
-            model: last_entry.model.unwrap_or_else(|| "Unknown Model".to_string()),
-            total_tokens: if session_tokens > 0 { session_tokens } else { last_entry.tokens.as_ref().map(|t| t.total).unwrap_or(0) },
-            total_input_tokens,
-            total_output_tokens,
-            total_cache_read_tokens,
-            total_reasoning_tokens,
-            max_turn_no: s_entries.iter().map(|e| e.turn_no).max().unwrap_or(1),
-            timestamp: s_entries[0].timestamp.clone(),
-            duration_ms: session_duration,
-            cost_usd,
-        });
-    }
-
-    sessions_summary.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-
-    Json(UsageDetailsResponse {
-        date,
-        summary,
-        sessions: sessions_summary,
-        raw_entries: entries,
-    }).into_response()
 }
 
 // =========================================================================
-// API 3: 獲取 Session 對話細節並重建 Timeline 時間軸
+// GET /api/session/:session_id  — timeline from JSONL
 // =========================================================================
-
 #[derive(Serialize)]
 struct SessionTimelineResponse {
     session_id: String,
@@ -689,28 +209,22 @@ enum TimelineItem {
     UserPrompt {
         timestamp: String,
         prompt: String,
-        transformed_prompt: Option<String>,
-        attachments: Vec<serde_json::Value>,
         turn_no: u32,
     },
     AssistantReply {
         timestamp: String,
         reply: String,
         model: String,
-        output_tokens: Option<u64>,
-        input_tokens: Option<u64>,
-        cache_read_tokens: Option<u64>,
-        cache_write_tokens: Option<u64>,
-        reasoning_tokens: Option<u64>,
-        total_tokens: Option<u64>,
-        tool_requests: Vec<serde_json::Value>,
+        usage: serde_json::Value,
+        tool_calls: Vec<serde_json::Value>,
         turn_no: u32,
     },
-    ToolStep {
+    ToolResult {
         timestamp: String,
+        tool_use_id: String,
         tool_name: String,
-        arguments: serde_json::Value,
-        result: Option<serde_json::Value>,
+        is_error: bool,
+        result: serde_json::Value,
         turn_no: u32,
     },
     SystemStatus {
@@ -721,762 +235,428 @@ enum TimelineItem {
 }
 
 async fn get_session_details(Path(session_id): Path<String>) -> impl IntoResponse {
-    let copilot_dir = match get_copilot_dir() {
-        Ok(dir) => dir,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e }))).into_response(),
+    let claude_dir = match db::get_claude_dir() {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
     };
 
-    let mut filepath = copilot_dir.join("session-state").join(&session_id).join("events.jsonl");
-    if !filepath.exists() {
-        let fallback = copilot_dir.join("session-state").join(format!("{}.jsonl", session_id));
-        if fallback.exists() {
-            filepath = fallback;
-        } else {
-            return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": format!("找不到 Session {} 的事件歷史紀錄。", session_id) }))).into_response();
+    let jsonl_path = match db::find_session_jsonl(&claude_dir, &session_id) {
+        Some(p) => p,
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("找不到 Session {} 的 JSONL", session_id)}))).into_response(),
+    };
+
+    let file = match File::open(&jsonl_path) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("開啟檔案失敗: {}", e)}))).into_response(),
+    };
+
+    // Also load session-meta for metadata
+    let meta_path = claude_dir.join("usage-data").join("session-meta").join(format!("{}.json", session_id));
+    let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
+    if let Ok(content) = fs::read_to_string(&meta_path) {
+        if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(pp) = meta.get("project_path") { metadata.insert("project_path".to_string(), pp.clone()); }
+            if let Some(dm) = meta.get("duration_minutes") { metadata.insert("duration_minutes".to_string(), dm.clone()); }
+            if let Some(st) = meta.get("start_time") { metadata.insert("start_time".to_string(), st.clone()); }
         }
     }
 
-    let file = match File::open(&filepath) {
-        Ok(f) => f,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("開啟檔案失敗: {}", e) }))).into_response(),
-    };
+    let reader = BufReader::new(file);
+    let mut timeline: Vec<TimelineItem> = Vec::new();
+    let mut turn_no: u32 = 0;
 
-    // 預先從 SQLite 資料庫中載入此 Session 的每回合 (turn_no) 的 Token 增量 (delta_tokens) 統計
-    let session_id_clone = session_id.clone();
-    let db_entries: HashMap<u32, TokenStats> = tokio::task::spawn_blocking(move || {
-        let mut map = HashMap::new();
-        if let Ok(conn) = db::get_db_conn() {
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT turn_no, delta_input, delta_output, delta_cache_read, delta_reasoning, delta_total 
-                 FROM usage_entries WHERE session_id = ? ORDER BY turn_no ASC"
-            ) {
-                if let Ok(mut rows) = stmt.query(params![session_id_clone]) {
-                    while let Ok(Some(row)) = rows.next() {
-                        if let (Ok(turn_no), Ok(delta_input), Ok(delta_output), Ok(delta_total)) = (
-                            row.get::<_, i64>(0),
-                            row.get::<_, Option<i64>>(1),
-                            row.get::<_, Option<i64>>(2),
-                            row.get::<_, Option<i64>>(5)
-                        ) {
-                            if let (Some(input), Some(output), Some(total)) = (delta_input, delta_output, delta_total) {
-                                let cache_read = row.get::<_, Option<i64>>(3).ok().flatten().map(|v| v as u64);
-                                let reasoning = row.get::<_, Option<i64>>(4).ok().flatten().map(|v| v as u64);
-                                map.insert(turn_no as u32, TokenStats {
-                                    input: input as u64,
-                                    output: output as u64,
-                                    cache_read,
-                                    cache_write: None,
-                                    reasoning,
-                                    total: total as u64,
+    // Track seen UUIDs to deduplicate streamed assistant messages
+    // For each uuid, keep the last line (final state)
+    let assistant_lines: Vec<(String, String)> = Vec::new(); // (uuid, line)
+    let mut ordered_uuids: Vec<String> = Vec::new();
+    let mut uuid_to_last_line: HashMap<String, String> = HashMap::new();
+    let mut all_lines: Vec<String> = Vec::new();
+
+    for line_result in reader.lines() {
+        let line = match line_result { Ok(l) => l, Err(_) => continue };
+        let obj: serde_json::Value = match serde_json::from_str(&line) { Ok(v) => v, Err(_) => continue };
+        let t = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let uuid = obj.get("uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if t == "assistant" && !uuid.is_empty() {
+            if !ordered_uuids.contains(&uuid) {
+                ordered_uuids.push(uuid.clone());
+                all_lines.push(format!("__ASSISTANT__{}", uuid));
+            }
+            uuid_to_last_line.insert(uuid, line);
+        } else {
+            all_lines.push(line);
+        }
+        let _ = assistant_lines; // suppress warning
+    }
+
+    // Now process in order
+    let mut tool_name_map: HashMap<String, String> = HashMap::new(); // tool_use_id -> tool_name
+
+    for raw in &all_lines {
+        if let Some(uuid) = raw.strip_prefix("__ASSISTANT__") {
+            let line = match uuid_to_last_line.get(uuid) { Some(l) => l, None => continue };
+            let obj: serde_json::Value = match serde_json::from_str(line) { Ok(v) => v, Err(_) => continue };
+            let msg = match obj.get("message") { Some(m) => m, None => continue };
+            let timestamp = obj.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let model = msg.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let usage = msg.get("usage").cloned().unwrap_or(serde_json::Value::Null);
+            let content = msg.get("content").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+            let mut text_parts: Vec<String> = Vec::new();
+            let mut tool_calls: Vec<serde_json::Value> = Vec::new();
+
+            for block in &content {
+                let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                match block_type {
+                    "text" => {
+                        if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                            text_parts.push(t.to_string());
+                        }
+                    }
+                    "thinking" => {}
+                    "tool_use" => {
+                        let tool_id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let tool_name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        if !tool_id.is_empty() {
+                            tool_name_map.insert(tool_id.clone(), tool_name.clone());
+                        }
+                        let tc = serde_json::json!({
+                            "id": tool_id,
+                            "name": tool_name,
+                            "input": block.get("input").cloned().unwrap_or(serde_json::Value::Null)
+                        });
+                        tool_calls.push(tc);
+                    }
+                    _ => {}
+                }
+            }
+
+            let reply = text_parts.join("\n");
+            timeline.push(TimelineItem::AssistantReply {
+                timestamp,
+                reply,
+                model,
+                usage,
+                tool_calls,
+                turn_no,
+            });
+        } else {
+            let obj: serde_json::Value = match serde_json::from_str(raw) { Ok(v) => v, Err(_) => continue };
+            let t = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let timestamp = obj.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+            match t {
+                "user" => {
+                    let msg = match obj.get("message") { Some(m) => m, None => continue };
+                    let content = msg.get("content");
+                    match content {
+                        Some(serde_json::Value::String(s)) => {
+                            if s.is_empty() { continue; }
+                            turn_no += 1;
+                            timeline.push(TimelineItem::UserPrompt {
+                                timestamp,
+                                prompt: s.clone(),
+                                turn_no,
+                            });
+                        }
+                        Some(serde_json::Value::Array(arr)) => {
+                            let mut prompt_text = String::new();
+                            let mut tool_results: Vec<(String, bool, serde_json::Value)> = Vec::new();
+
+                            for block in arr {
+                                let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                match block_type {
+                                    "text" => {
+                                        if let Some(s) = block.get("text").and_then(|v| v.as_str()) {
+                                            prompt_text.push_str(s);
+                                        }
+                                    }
+                                    "tool_result" => {
+                                        let tool_use_id = block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let is_error = block.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                                        let result_content = block.get("content").cloned().unwrap_or(serde_json::Value::Null);
+                                        let result = serde_json::json!({
+                                            "toolUseResult": {
+                                                "stdout": if let Some(s) = result_content.as_str() { s.to_string() }
+                                                          else { serde_json::to_string(&result_content).unwrap_or_default() },
+                                                "stderr": ""
+                                            }
+                                        });
+                                        tool_results.push((tool_use_id, is_error, result));
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if !prompt_text.is_empty() {
+                                turn_no += 1;
+                                timeline.push(TimelineItem::UserPrompt {
+                                    timestamp: timestamp.clone(),
+                                    prompt: prompt_text,
+                                    turn_no,
+                                });
+                            }
+
+                            for (tool_use_id, is_error, result) in tool_results {
+                                let tool_name = tool_name_map.get(&tool_use_id).cloned().unwrap_or_default();
+                                timeline.push(TimelineItem::ToolResult {
+                                    timestamp: timestamp.clone(),
+                                    tool_use_id,
+                                    tool_name,
+                                    is_error,
+                                    result,
+                                    turn_no,
                                 });
                             }
                         }
+                        _ => {}
                     }
                 }
-            }
-        }
-        map
-    }).await.unwrap_or_default();
-
-    let reader = BufReader::new(file);
-    let mut timeline = Vec::new();
-    let mut metadata = HashMap::new();
-
-    let mut total_in = 0;
-    let mut total_out = 0;
-    let mut total_cache = 0;
-    let mut total_reasoning = 0;
-    let mut total_all = 0;
-    let mut compaction_count = 0;
-
-    // 用於關聯 ToolStep 的狀態對應表 (toolCallId -> TimelineItem 索引)
-    let mut tool_calls_map: HashMap<String, usize> = HashMap::new();
-    
-    // 用於記錄目前對話的回合序號，以確保與 SQLite 中的 turn_no 完美精確對齊
-    let mut current_turn_no = 1;
-    let mut has_seen_user_prompt = false;
-    let mut turn_ids: Vec<String> = Vec::new();
-
-    for line_res in reader.lines() {
-        let line = match line_res {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-
-        let event: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        let timestamp = event.get("timestamp").and_then(|t| t.as_str()).unwrap_or("").to_string();
-        let data = event.get("data");
-
-        // 精準解析 events.jsonl 中的 turnId (優先從 data 區塊，其次從根節點)
-        let turn_id = event.get("turnId")
-            .or_else(|| data.and_then(|d| d.get("turnId")))
-            .and_then(|id| id.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        // 依據 turnId 進行精準對齊，若 turnId 不存在則 Fallback 採用回合計數對齊器
-        let turn_no = if !turn_id.is_empty() {
-            if !turn_ids.contains(&turn_id) {
-                turn_ids.push(turn_id.clone());
-            }
-            (turn_ids.iter().position(|id| id == &turn_id).unwrap() + 1) as u32
-        } else {
-            current_turn_no as u32
-        };
-
-        match event_type {
-            "session.compaction_complete" => {
-                compaction_count += 1;
-                timeline.push(TimelineItem::SystemStatus {
-                    timestamp,
-                    status_type: "session_compaction".to_string(),
-                    message: "會話狀態壓縮完成 (Session Compaction Completed)".to_string(),
-                });
-            }
-            "session.start" => {
-                if let Some(d) = data {
-                    metadata.insert("start_time".to_string(), d.get("startTime").cloned().unwrap_or_default());
-                    metadata.insert("copilot_version".to_string(), d.get("copilotVersion").cloned().unwrap_or_default());
-                    metadata.insert("selected_model".to_string(), d.get("selectedModel").cloned().unwrap_or_default());
-                    if let Some(ctx) = d.get("context") {
-                        metadata.insert("cwd".to_string(), ctx.get("cwd").cloned().unwrap_or_default());
-                        metadata.insert("git_branch".to_string(), ctx.get("branch").cloned().unwrap_or_default());
-                        metadata.insert("repository".to_string(), ctx.get("repository").cloned().unwrap_or_default());
-                    }
-                }
-                timeline.push(TimelineItem::SystemStatus {
-                    timestamp,
-                    status_type: "session_start".to_string(),
-                    message: "會話開始 (Session Started)".to_string(),
-                });
-            }
-            "session.shutdown" => {
-                timeline.push(TimelineItem::SystemStatus {
-                    timestamp,
-                    status_type: "session_shutdown".to_string(),
-                    message: "會話結束 (Session Ended)".to_string(),
-                });
-            }
-            "user.message" => {
-                if has_seen_user_prompt {
-                    current_turn_no += 1;
-                }
-                has_seen_user_prompt = true;
-                if let Some(d) = data {
-                    let prompt = d.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
-                    let transformed_prompt = d.get("transformedContent").and_then(|c| c.as_str()).map(|s| s.to_string());
-                    let attachments = d.get("attachments").and_then(|a| a.as_array()).cloned().unwrap_or_default();
-
-                    timeline.push(TimelineItem::UserPrompt {
+                "summary" => {
+                    timeline.push(TimelineItem::SystemStatus {
                         timestamp,
-                        prompt,
-                        transformed_prompt,
-                        attachments,
-                        turn_no,
+                        status_type: "session_compaction".to_string(),
+                        message: "會話狀態壓縮完成 (Session Compaction Completed)".to_string(),
                     });
                 }
+                _ => {}
             }
-            "assistant.message" => {
-                if let Some(d) = data {
-                    let reply = d.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
-                    let model = d.get("model").and_then(|m| m.as_str()).unwrap_or("GPT").to_string();
-
-                    // 支援扁平屬性與巢狀屬性解析 Token 數據
-                    let mut output_tokens = d.get("outputTokens").and_then(|o| o.as_u64());
-                    let mut input_tokens = d.get("inputTokens").and_then(|o| o.as_u64());
-                    let mut cache_read_tokens = d.get("cacheReadTokens").and_then(|o| o.as_u64());
-                    let mut cache_write_tokens = d.get("cacheWriteTokens").and_then(|o| o.as_u64());
-                    let mut reasoning_tokens = d.get("reasoningTokens").and_then(|o| o.as_u64());
-                    let mut total_tokens = d.get("totalTokens").and_then(|o| o.as_u64());
-
-                    if let Some(tokens_obj) = d.get("tokens") {
-                        if output_tokens.is_none() {
-                            output_tokens = tokens_obj.get("output").and_then(|t| t.as_u64());
-                        }
-                        if input_tokens.is_none() {
-                            input_tokens = tokens_obj.get("input").and_then(|t| t.as_u64());
-                        }
-                        if cache_read_tokens.is_none() {
-                            cache_read_tokens = tokens_obj.get("cache_read").and_then(|t| t.as_u64());
-                        }
-                        if cache_write_tokens.is_none() {
-                            cache_write_tokens = tokens_obj.get("cache_write").and_then(|t| t.as_u64());
-                        }
-                        if reasoning_tokens.is_none() {
-                            reasoning_tokens = tokens_obj.get("reasoning").and_then(|t| t.as_u64());
-                        }
-                        if total_tokens.is_none() {
-                            total_tokens = tokens_obj.get("total").and_then(|t| t.as_u64());
-                        }
-                    }
-
-                    // 如果從 events.jsonl 本身解析出的 Token 數據不齊全，則嘗試從 SQLite 資料庫中對應 turn_no 的 delta_tokens 數據補齊
-                    if let Some(db_stats) = db_entries.get(&turn_no) {
-                        if input_tokens.is_none() || input_tokens == Some(0) {
-                            input_tokens = Some(db_stats.input);
-                        }
-                        if output_tokens.is_none() || output_tokens == Some(0) {
-                            output_tokens = Some(db_stats.output);
-                        }
-                        if cache_read_tokens.is_none() || cache_read_tokens == Some(0) {
-                            cache_read_tokens = db_stats.cache_read;
-                        }
-                        if reasoning_tokens.is_none() || reasoning_tokens == Some(0) {
-                            reasoning_tokens = db_stats.reasoning;
-                        }
-                        if total_tokens.is_none() || total_tokens == Some(0) {
-                            total_tokens = Some(db_stats.total);
-                        }
-                    }
-
-                    if total_tokens.is_none() {
-                        if let (Some(in_t), Some(out_t)) = (input_tokens, output_tokens) {
-                            total_tokens = Some(in_t + out_t);
-                        }
-                    }
-
-                    if let Some(t) = input_tokens {
-                        total_in += t;
-                    }
-                    if let Some(t) = output_tokens {
-                        total_out += t;
-                    }
-                    if let Some(t) = cache_read_tokens {
-                        total_cache += t;
-                    }
-                    if let Some(t) = reasoning_tokens {
-                        total_reasoning += t;
-                    }
-                    if let Some(t) = total_tokens {
-                        total_all += t;
-                    }
-
-                    let tool_requests = d.get("toolRequests").and_then(|r| r.as_array()).cloned().unwrap_or_default();
-                    let has_tools = !tool_requests.is_empty();
-
-                    // 即使助理回覆是空白（例如僅呼叫 Tool），也記錄下來方便觀測
-                    timeline.push(TimelineItem::AssistantReply {
-                        timestamp,
-                        reply,
-                        model,
-                        output_tokens,
-                        input_tokens,
-                        cache_read_tokens,
-                        cache_write_tokens,
-                        reasoning_tokens,
-                        total_tokens,
-                        tool_requests,
-                        turn_no,
-                    });
-
-                    // 如果此助理訊息沒有調用任何 Tool，且此會話從未出現過使用者提問（即 CLI 帶參數模式），則將回合序號遞增 1
-                    if !has_tools && !has_seen_user_prompt {
-                        current_turn_no += 1;
-                    }
-                }
-            }
-
-            "tool.execution_start" => {
-                if let Some(d) = data {
-                    let tool_name = d.get("toolName").and_then(|t| t.as_str()).unwrap_or("unknown").to_string();
-                    let arguments = d.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
-                    let tool_call_id = d.get("toolCallId").and_then(|id| id.as_str()).unwrap_or("").to_string();
-
-                    let index = timeline.len();
-                    timeline.push(TimelineItem::ToolStep {
-                        timestamp,
-                        tool_name,
-                        arguments,
-                        result: None,
-                        turn_no,
-                    });
-
-                    if !tool_call_id.is_empty() {
-                        tool_calls_map.insert(tool_call_id, index);
-                    }
-                }
-            }
-            "tool.execution_complete" => {
-                if let Some(d) = data {
-                    let tool_call_id = d.get("toolCallId").and_then(|id| id.as_str()).unwrap_or("").to_string();
-                    let result = d.get("result").cloned().unwrap_or(serde_json::Value::Null);
-
-                    if let Some(&idx) = tool_calls_map.get(&tool_call_id) {
-                        if idx < timeline.len() {
-                            // 更新先前加入的 ToolStep 結果
-                            if let TimelineItem::ToolStep { result: ref mut res, .. } = &mut timeline[idx] {
-                                *res = Some(result);
-                            } else {
-                                // 以防型別不對，直接替換
-                                if let TimelineItem::ToolStep { timestamp, tool_name, arguments, turn_no: t_no, .. } = &timeline[idx] {
-                                    timeline[idx] = TimelineItem::ToolStep {
-                                        timestamp: timestamp.clone(),
-                                        tool_name: tool_name.clone(),
-                                        arguments: arguments.clone(),
-                                        result: Some(result),
-                                        turn_no: *t_no,
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
         }
     }
 
-    metadata.insert("total_input_tokens".to_string(), serde_json::Value::from(total_in));
-    metadata.insert("total_output_tokens".to_string(), serde_json::Value::from(total_out));
-    metadata.insert("total_cache_read_tokens".to_string(), serde_json::Value::from(total_cache));
-    metadata.insert("total_reasoning_tokens".to_string(), serde_json::Value::from(total_reasoning));
-    metadata.insert("total_tokens".to_string(), serde_json::Value::from(total_all));
-    metadata.insert("compaction_count".to_string(), serde_json::Value::from(compaction_count));
+    // Compute metadata token totals from timeline
+    let mut total_input: i64 = 0;
+    let mut total_output: i64 = 0;
+    let mut total_cache_creation: i64 = 0;
+    let mut total_cache_read: i64 = 0;
+    for item in &timeline {
+        if let TimelineItem::AssistantReply { usage, .. } = item {
+            total_input += usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+            total_output += usage.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+            total_cache_creation += usage.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+            total_cache_read += usage.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+        }
+    }
+    metadata.insert("total_tokens".to_string(), serde_json::json!(total_input + total_output + total_cache_creation + total_cache_read));
+    metadata.insert("total_input_tokens".to_string(), serde_json::json!(total_input));
+    metadata.insert("total_output_tokens".to_string(), serde_json::json!(total_output));
+    metadata.insert("total_cache_creation_tokens".to_string(), serde_json::json!(total_cache_creation));
+    metadata.insert("total_cache_read_tokens".to_string(), serde_json::json!(total_cache_read));
 
-    Json(SessionTimelineResponse {
-        session_id,
-        metadata,
-        timeline,
-    }).into_response()
+    Json(SessionTimelineResponse { session_id, metadata, timeline }).into_response()
 }
 
 // =========================================================================
-// API 4: 列出所有可用的月份清單
+// GET /api/months
 // =========================================================================
-
 #[derive(Serialize)]
-struct MonthListResponse {
-    months: Vec<String>,
-}
+struct MonthListResponse { months: Vec<String> }
 
 async fn get_available_months() -> impl IntoResponse {
-    // 確保資料最新
-    let _ = tokio::task::spawn_blocking(|| {
-        if let Ok(conn) = db::get_db_conn() {
-            let _ = db::sync_usage_logs(&conn);
-        }
-    }).await;
-
     let res: Result<Vec<String>, String> = tokio::task::spawn_blocking(|| {
         let conn = db::get_db_conn()?;
-        let mut stmt = conn.prepare("SELECT DISTINCT substr(date, 1, 7) AS month FROM usage_entries ORDER BY month DESC")
-            .map_err(|e| e.to_string())?;
-        
-        let months_iter = stmt.query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        
-        let mut months = Vec::new();
-        for m in months_iter {
-            if let Ok(month) = m {
-                months.push(month);
-            }
-        }
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT substr(date, 1, 7) as ym FROM sessions ORDER BY ym DESC"
+        ).map_err(|e| e.to_string())?;
+        let months = stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .flatten().collect();
         Ok(months)
-    }).await.unwrap_or_else(|_| Err("執行緒執行失敗".to_string()));
-
+    }).await.unwrap_or_else(|_| Err("執行緒失敗".to_string()));
     match res {
-        Ok(month_list) => Json(MonthListResponse { months: month_list }).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e }))).into_response(),
+        Ok(months) => Json(MonthListResponse { months }).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
     }
 }
 
 // =========================================================================
-// API 5: 獲取特定月份的彙整統計
+// GET /api/monthly/:year_month
 // =========================================================================
+#[derive(Serialize)]
+struct MonthlySummary {
+    total_sessions: i64,
+    total_tokens: i64,
+    total_input_tokens: i64,
+    total_output_tokens: i64,
+    total_cache_creation_tokens: i64,
+    total_cache_read_tokens: i64,
+    total_cost_usd: f64,
+    total_duration_minutes: f64,
+}
 
 #[derive(Serialize)]
-struct MonthlyDetailsResponse {
-    year_month: String,
-    summary: DaySummary,
-    daily_breakdown: Vec<DailyBreakdownEntry>,
-    top_models: Vec<ModelUsageSummary>,
-    top_projects: Vec<ProjectUsageSummary>,
-}
-
-#[derive(Serialize, Clone)]
-struct DailyBreakdownEntry {
+struct DailyBreakdown {
     date: String,
-    total_sessions: usize,
-    total_tokens: u64,
-    total_input_tokens: u64,
-    total_output_tokens: u64,
-    total_cache_read_tokens: u64,
-    total_reasoning_tokens: u64,
-    total_duration_ms: u64,
-    total_requests: u64,
+    total_sessions: i64,
+    total_tokens: i64,
+    total_input_tokens: i64,
+    total_output_tokens: i64,
+    total_cache_creation_tokens: i64,
+    total_cache_read_tokens: i64,
     cost_usd: f64,
 }
 
-#[derive(Serialize, Clone)]
-struct ModelUsageSummary {
+#[derive(Serialize)]
+struct ModelEntry {
     model: String,
-    session_count: usize,
-    total_tokens: u64,
-    total_input_tokens: u64,
-    total_output_tokens: u64,
-    total_cache_read_tokens: u64,
+    session_count: i64,
+    total_tokens: i64,
+    total_cache_read_tokens: i64,
     cost_usd: f64,
 }
 
-#[derive(Serialize, Clone)]
-struct ProjectUsageSummary {
+#[derive(Serialize)]
+struct ProjectEntry {
     project: String,
-    session_count: usize,
-    total_tokens: u64,
-    total_cache_read_tokens: u64,
+    session_count: i64,
+    total_tokens: i64,
+    total_cache_read_tokens: i64,
+}
+
+#[derive(Serialize)]
+struct MonthlyResponse {
+    year_month: String,
+    summary: MonthlySummary,
+    daily_breakdown: Vec<DailyBreakdown>,
+    top_models: Vec<ModelEntry>,
+    top_projects: Vec<ProjectEntry>,
 }
 
 async fn get_monthly_details(Path(year_month): Path<String>) -> impl IntoResponse {
-    // 確保資料最新
-    let _ = tokio::task::spawn_blocking(|| {
-        if let Ok(conn) = db::get_db_conn() {
-            let _ = db::sync_usage_logs(&conn);
-        }
-    }).await;
-
-    let query_month = format!("{}-%", year_month);
-    let entries_res: Result<Vec<UsageEntry>, String> = tokio::task::spawn_blocking(move || {
+    let ym = year_month.clone();
+    let res: Result<MonthlyResponse, String> = tokio::task::spawn_blocking(move || {
         let conn = db::get_db_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT 
-                timestamp, session_id, session_name, transcript_path, cwd, version, turn_no, model, model_id,
-                tokens_input, tokens_output, tokens_cache_read, tokens_reasoning, tokens_total,
-                delta_input, delta_output, delta_cache_read, delta_reasoning, delta_total,
-                duration_ms, premium_requests
-             FROM usage_entries WHERE date LIKE ? ORDER BY timestamp ASC"
-        ).map_err(|e| e.to_string())?;
+        let pattern = format!("{}%", ym);
 
-        let entries_iter = stmt.query_map(params![query_month], |row| {
-            let tokens_input: Option<u64> = row.get::<_, Option<i64>>(9)?.map(|v| v as u64);
-            let tokens_output: Option<u64> = row.get::<_, Option<i64>>(10)?.map(|v| v as u64);
-            let tokens_cache_read: Option<u64> = row.get::<_, Option<i64>>(11)?.map(|v| v as u64);
-            let tokens_reasoning: Option<u64> = row.get::<_, Option<i64>>(12)?.map(|v| v as u64);
-            let tokens_total: Option<u64> = row.get::<_, Option<i64>>(13)?.map(|v| v as u64);
+        // Summary
+        let summary: MonthlySummary = {
+            let row = conn.query_row(
+                "SELECT COUNT(*), SUM(total_tokens), SUM(input_tokens), SUM(output_tokens),
+                        SUM(cache_creation_tokens), SUM(cache_read_tokens),
+                        SUM(cost_usd), SUM(COALESCE(duration_minutes, 0))
+                 FROM sessions WHERE date LIKE ?1",
+                params![pattern],
+                |row| Ok((
+                    row.get::<_,i64>(0)?, row.get::<_,i64>(1)?, row.get::<_,i64>(2)?,
+                    row.get::<_,i64>(3)?, row.get::<_,i64>(4)?, row.get::<_,i64>(5)?,
+                    row.get::<_,f64>(6)?, row.get::<_,f64>(7)?
+                ))
+            ).map_err(|e| e.to_string())?;
+            MonthlySummary {
+                total_sessions: row.0, total_tokens: row.1, total_input_tokens: row.2,
+                total_output_tokens: row.3, total_cache_creation_tokens: row.4,
+                total_cache_read_tokens: row.5, total_cost_usd: row.6, total_duration_minutes: row.7,
+            }
+        };
 
-            let tokens = if let (Some(input), Some(output), Some(total)) = (tokens_input, tokens_output, tokens_total) {
-                Some(TokenStats {
-                    input,
-                    output,
-                    cache_read: tokens_cache_read,
-                    cache_write: None,
-                    reasoning: tokens_reasoning,
-                    total,
+        // Daily breakdown
+        let daily_breakdown: Vec<DailyBreakdown> = {
+            let mut stmt_d = conn.prepare(
+                "SELECT date, COUNT(*), SUM(total_tokens), SUM(input_tokens), SUM(output_tokens),
+                        SUM(cache_creation_tokens), SUM(cache_read_tokens), SUM(cost_usd)
+                 FROM sessions WHERE date LIKE ?1 GROUP BY date ORDER BY date ASC"
+            ).map_err(|e| e.to_string())?;
+            let rows_d: Vec<DailyBreakdown> = stmt_d.query_map(params![pattern], |row: &rusqlite::Row| {
+                Ok(DailyBreakdown {
+                    date: row.get(0)?, total_sessions: row.get(1)?,
+                    total_tokens: row.get(2)?, total_input_tokens: row.get(3)?,
+                    total_output_tokens: row.get(4)?, total_cache_creation_tokens: row.get(5)?,
+                    total_cache_read_tokens: row.get(6)?, cost_usd: row.get(7)?,
                 })
-            } else {
-                None
-            };
+            }).map_err(|e: rusqlite::Error| e.to_string())?.flatten().collect();
+            rows_d
+        };
 
-            let delta_input: Option<u64> = row.get::<_, Option<i64>>(14)?.map(|v| v as u64);
-            let delta_output: Option<u64> = row.get::<_, Option<i64>>(15)?.map(|v| v as u64);
-            let delta_cache_read: Option<u64> = row.get::<_, Option<i64>>(16)?.map(|v| v as u64);
-            let delta_reasoning: Option<u64> = row.get::<_, Option<i64>>(17)?.map(|v| v as u64);
-            let delta_total: Option<u64> = row.get::<_, Option<i64>>(18)?.map(|v| v as u64);
-
-            let delta_tokens = if let (Some(input), Some(output), Some(total)) = (delta_input, delta_output, delta_total) {
-                Some(TokenStats {
-                    input,
-                    output,
-                    cache_read: delta_cache_read,
-                    cache_write: None,
-                    reasoning: delta_reasoning,
-                    total,
+        // Top models
+        let top_models: Vec<ModelEntry> = {
+            let mut stmt_m = conn.prepare(
+                "SELECT COALESCE(model,'unknown'), COUNT(*), SUM(total_tokens),
+                        SUM(cache_read_tokens), SUM(cost_usd)
+                 FROM sessions WHERE date LIKE ?1
+                 GROUP BY model ORDER BY SUM(total_tokens) DESC LIMIT 20"
+            ).map_err(|e| e.to_string())?;
+            let rows_m: Vec<ModelEntry> = stmt_m.query_map(params![pattern], |row: &rusqlite::Row| {
+                Ok(ModelEntry {
+                    model: row.get(0)?, session_count: row.get(1)?,
+                    total_tokens: row.get(2)?, total_cache_read_tokens: row.get(3)?, cost_usd: row.get(4)?,
                 })
-            } else {
-                None
-            };
+            }).map_err(|e: rusqlite::Error| e.to_string())?.flatten().collect();
+            rows_m
+        };
 
-            let duration_ms: Option<f64> = row.get::<_, Option<i64>>(19)?.map(|v| v as f64);
-            let premium_requests: Option<f64> = row.get::<_, Option<i64>>(20)?.map(|v| v as f64);
-
-            let cost = if duration_ms.is_some() || premium_requests.is_some() {
-                Some(CostStats {
-                    total_api_duration_ms: duration_ms,
-                    total_duration_ms: None,
-                    total_premium_requests: premium_requests,
+        // Top projects
+        let top_projects: Vec<ProjectEntry> = {
+            let mut stmt_p = conn.prepare(
+                "SELECT COALESCE(project_path,'(no project)'), COUNT(*), SUM(total_tokens),
+                        SUM(cache_read_tokens)
+                 FROM sessions WHERE date LIKE ?1
+                 GROUP BY project_path ORDER BY SUM(total_tokens) DESC LIMIT 20"
+            ).map_err(|e| e.to_string())?;
+            let rows_p: Vec<ProjectEntry> = stmt_p.query_map(params![pattern], |row: &rusqlite::Row| {
+                Ok(ProjectEntry {
+                    project: row.get(0)?, session_count: row.get(1)?,
+                    total_tokens: row.get(2)?, total_cache_read_tokens: row.get(3)?,
                 })
-            } else {
-                None
-            };
+            }).map_err(|e: rusqlite::Error| e.to_string())?.flatten().collect();
+            rows_p
+        };
 
-            Ok(UsageEntry {
-                timestamp: row.get(0)?,
-                session_id: row.get(1)?,
-                session_name: row.get(2).ok(),
-                transcript_path: row.get(3).ok(),
-                cwd: row.get(4).ok(),
-                version: row.get(5).ok(),
-                turn_no: row.get::<_, i64>(6)? as u32,
-                model: row.get(7).ok(),
-                model_id: row.get(8).ok(),
-                tokens,
-                delta_tokens,
-                context: None,
-                cost,
-            })
-        }).map_err(|e| e.to_string())?;
-
-        let mut entries = Vec::new();
-        for entry in entries_iter {
-            if let Ok(e) = entry {
-                entries.push(e);
-            }
-        }
-        Ok(entries)
-    }).await.unwrap_or_else(|_| Err("執行緒執行失敗".to_string()));
-
-    let entries = match entries_res {
-        Ok(e) => e,
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": err }))).into_response(),
-    };
-
-    if entries.is_empty() {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "找不到該月份的使用量資料。" }))).into_response();
-    }
-
-    let mut daily_map: HashMap<String, Vec<UsageEntry>> = HashMap::new();
-    for e in &entries {
-        if e.timestamp.len() >= 10 {
-            let d = e.timestamp[0..10].to_string();
-            daily_map.entry(d).or_default().push(e.clone());
-        }
-    }
-
-    let pricing_rules = load_pricing_rules();
-    let mut daily_breakdown = Vec::new();
-    let mut monthly_summary = DaySummary::default();
-    
-    let mut model_sessions: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
-    let mut model_tokens: HashMap<String, u64> = HashMap::new();
-    let mut model_input_tokens: HashMap<String, u64> = HashMap::new();
-    let mut model_output_tokens: HashMap<String, u64> = HashMap::new();
-    let mut model_cache_tokens: HashMap<String, u64> = HashMap::new();
-    
-    let mut project_sessions: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
-    let mut project_tokens: HashMap<String, u64> = HashMap::new();
-    let mut project_cache_tokens: HashMap<String, u64> = HashMap::new();
-
-    // 依日期小到大排序
-    let mut sorted_dates: Vec<String> = daily_map.keys().cloned().collect();
-    sorted_dates.sort();
-
-    for date_str in sorted_dates {
-        let entries_list = daily_map.get(&date_str).unwrap();
-
-        let mut day_tokens = 0;
-        let mut day_input = 0;
-        let mut day_output = 0;
-        let mut day_reasoning = 0;
-        let mut day_cache_read = 0;
-        let mut day_duration = 0;
-        let mut day_requests = 0;
-        let mut day_sessions = std::collections::HashSet::new();
-
-        for e in entries_list {
-            let sid = e.session_id.clone();
-            day_sessions.insert(sid.clone());
-
-            let mut entry_tokens = 0;
-            let mut entry_input = 0;
-            let mut entry_output = 0;
-            if let Some(ref tokens) = e.delta_tokens {
-                entry_tokens = tokens.total;
-                entry_input = tokens.input;
-                entry_output = tokens.output;
-                day_tokens += tokens.total;
-                day_input += tokens.input;
-                day_output += tokens.output;
-                day_reasoning += tokens.reasoning.unwrap_or(0);
-                day_cache_read += tokens.cache_read.unwrap_or(0);
-            } else if let Some(ref tokens) = e.tokens {
-                if e.turn_no == 1 {
-                    entry_tokens = tokens.total;
-                    entry_input = tokens.input;
-                    entry_output = tokens.output;
-                    day_tokens += tokens.total;
-                    day_input += tokens.input;
-                    day_output += tokens.output;
-                    day_reasoning += tokens.reasoning.unwrap_or(0);
-                    day_cache_read += tokens.cache_read.unwrap_or(0);
-                }
-            }
-
-            let mut entry_cache = 0;
-            if let Some(ref tokens) = e.delta_tokens {
-                entry_cache = tokens.cache_read.unwrap_or(0);
-            } else if let Some(ref tokens) = e.tokens {
-                if e.turn_no == 1 {
-                    entry_cache = tokens.cache_read.unwrap_or(0);
-                }
-            }
-
-            let model = e.model.clone().unwrap_or_else(|| "Unknown Model".to_string());
-            model_sessions.entry(model.clone()).or_default().insert(sid.clone());
-            *model_tokens.entry(model.clone()).or_default() += entry_tokens;
-            *model_input_tokens.entry(model.clone()).or_default() += entry_input;
-            *model_output_tokens.entry(model.clone()).or_default() += entry_output;
-            *model_cache_tokens.entry(model).or_default() += entry_cache;
-
-            let cwd = e.cwd.clone().unwrap_or_else(|| "Unknown Path".to_string());
-            project_sessions.entry(cwd.clone()).or_default().insert(sid.clone());
-            *project_tokens.entry(cwd.clone()).or_default() += entry_tokens;
-            *project_cache_tokens.entry(cwd).or_default() += entry_cache;
-        }
-
-        let mut session_last_entries: std::collections::HashMap<String, UsageEntry> = std::collections::HashMap::new();
-        for e in entries_list {
-            let sid = e.session_id.clone();
-            let entry = session_last_entries.entry(sid).or_insert_with(|| e.clone());
-            if e.turn_no > entry.turn_no {
-                *entry = e.clone();
-            }
-        }
-        for (_, last_entry) in session_last_entries {
-            if let Some(ref cost) = last_entry.cost {
-                day_duration += cost.total_api_duration_ms.unwrap_or(0.0) as u64;
-                day_requests += cost.total_premium_requests.unwrap_or(0.0) as u64;
-            }
-        }
-
-        monthly_summary.total_tokens += day_tokens;
-        monthly_summary.total_input_tokens += day_input;
-        monthly_summary.total_output_tokens += day_output;
-        monthly_summary.total_reasoning_tokens += day_reasoning;
-        monthly_summary.total_cache_read_tokens += day_cache_read;
-        monthly_summary.total_duration_ms += day_duration;
-        monthly_summary.total_requests += day_requests;
-
-        // Group entries of the day by session to calculate exact session costs
-        let mut day_sessions_map: HashMap<String, Vec<UsageEntry>> = HashMap::new();
-        for e in entries_list {
-            day_sessions_map.entry(e.session_id.clone()).or_default().push(e.clone());
-        }
-
-        let mut day_cost_usd = 0.0;
-        for (_session_id, s_entries) in &day_sessions_map {
-            let last_entry = s_entries
-                .iter()
-                .max_by_key(|e| e.turn_no)
-                .cloned()
-                .unwrap_or_else(|| s_entries[0].clone());
-
-            let session_tokens = s_entries
-                .iter()
-                .map(|e| e.delta_tokens.as_ref().map(|t| t.total).unwrap_or(0))
-                .sum::<u64>();
-
-            let session_input_tokens = s_entries
-                .iter()
-                .map(|e| e.delta_tokens.as_ref().map(|t| t.input).unwrap_or(0))
-                .sum::<u64>();
-
-            let session_output_tokens = s_entries
-                .iter()
-                .map(|e| e.delta_tokens.as_ref().map(|t| t.output).unwrap_or(0))
-                .sum::<u64>();
-
-            let session_cache_read = s_entries
-                .iter()
-                .map(|e| e.delta_tokens.as_ref().and_then(|t| t.cache_read).unwrap_or(0))
-                .sum::<u64>();
-
-            let total_cache_read_tokens = if session_tokens > 0 {
-                session_cache_read
-            } else {
-                last_entry.tokens.as_ref().and_then(|t| t.cache_read).unwrap_or(0)
-            };
-
-            let total_input_tokens = if session_tokens > 0 { session_input_tokens } else { last_entry.tokens.as_ref().map(|t| t.input).unwrap_or(0) };
-            let total_output_tokens = if session_tokens > 0 { session_output_tokens } else { last_entry.tokens.as_ref().map(|t| t.output).unwrap_or(0) };
-
-            let cost = calculate_cost(
-                &pricing_rules,
-                &last_entry.model.clone().unwrap_or_else(|| "Unknown Model".to_string()),
-                total_input_tokens,
-                total_output_tokens,
-                total_cache_read_tokens,
-            );
-            day_cost_usd += cost;
-        }
-
-        monthly_summary.total_cost_usd += day_cost_usd;
-
-        daily_breakdown.push(DailyBreakdownEntry {
-            date: date_str,
-            total_sessions: day_sessions.len(),
-            total_tokens: day_tokens,
-            total_input_tokens: day_input,
-            total_output_tokens: day_output,
-            total_cache_read_tokens: day_cache_read,
-            total_reasoning_tokens: day_reasoning,
-            total_duration_ms: day_duration,
-            total_requests: day_requests,
-            cost_usd: day_cost_usd,
-        });
-    }
-
-    let mut all_month_sessions = std::collections::HashSet::new();
-    for (_, sids) in &model_sessions {
-        for sid in sids {
-            all_month_sessions.insert(sid.clone());
-        }
-    }
-    monthly_summary.total_sessions = all_month_sessions.len();
-
-    let mut top_models = Vec::new();
-    for (model, sids) in model_sessions {
-        let total_tokens = model_tokens.get(&model).cloned().unwrap_or(0);
-        let total_input_tokens = model_input_tokens.get(&model).cloned().unwrap_or(0);
-        let total_output_tokens = model_output_tokens.get(&model).cloned().unwrap_or(0);
-        let total_cache_read_tokens = model_cache_tokens.get(&model).cloned().unwrap_or(0);
-        let cost_usd = calculate_cost(&pricing_rules, &model, total_input_tokens, total_output_tokens, total_cache_read_tokens);
-        top_models.push(ModelUsageSummary {
-            model,
-            session_count: sids.len(),
-            total_tokens,
-            total_input_tokens,
-            total_output_tokens,
-            total_cache_read_tokens,
-            cost_usd,
-        });
-    }
-    top_models.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
-
-    let mut top_projects = Vec::new();
-    for (project, sids) in project_sessions {
-        let total_tokens = project_tokens.get(&project).cloned().unwrap_or(0);
-        let total_cache_read_tokens = project_cache_tokens.get(&project).cloned().unwrap_or(0);
-        top_projects.push(ProjectUsageSummary {
-            project,
-            session_count: sids.len(),
-            total_tokens,
-            total_cache_read_tokens,
-        });
-    }
-    top_projects.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
-
-    Json(MonthlyDetailsResponse {
-        year_month,
-        summary: monthly_summary,
-        daily_breakdown,
-        top_models,
-        top_projects,
-    }).into_response()
-}
-
-async fn trigger_manual_sync() -> impl IntoResponse {
-    let res = tokio::task::spawn_blocking(|| {
-        let conn = db::get_db_conn()?;
-        db::init_db(&conn)?; // 確保資料庫與資料表已被成功初始化（若檔案被刪除會自動重建）
-        db::sync_usage_logs(&conn)
-    }).await.unwrap_or_else(|_| Err("執行緒執行失敗".to_string()));
+        Ok(MonthlyResponse { year_month: ym, summary, daily_breakdown, top_models, top_projects })
+    }).await.unwrap_or_else(|_| Err("執行緒失敗".to_string()));
 
     match res {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "message": "資料庫增量同步已完成！" }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "error": e }))).into_response(),
+        Ok(data) => Json(data).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
+    }
+}
+
+// =========================================================================
+// GET /api/pricing
+// =========================================================================
+#[derive(Serialize)]
+struct PricingEntry {
+    model_name: String,
+    deployment_type: String,
+    unit: String,
+    input_price: f64,
+    cache_read_price: f64,
+    cache_write_price: f64,
+    output_price: f64,
+}
+
+async fn get_pricing() -> impl IntoResponse {
+    let p = PathBuf::from("pricing.csv");
+    let content = match fs::read_to_string(&p) {
+        Ok(c) => c,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "pricing.csv not found"}))).into_response(),
+    };
+    let mut entries: Vec<PricingEntry> = Vec::new();
+    for line in content.lines().skip(1) {
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() < 7 { continue; }
+        entries.push(PricingEntry {
+            model_name: parts[0].trim().to_string(),
+            deployment_type: parts[1].trim().to_string(),
+            unit: parts[2].trim().to_string(),
+            input_price: parts[3].trim().parse().unwrap_or(0.0),
+            cache_read_price: parts[4].trim().parse().unwrap_or(0.0),
+            cache_write_price: parts[5].trim().parse().unwrap_or(0.0),
+            output_price: parts[6].trim().parse().unwrap_or(0.0),
+        });
+    }
+    Json(entries).into_response()
+}
+
+// =========================================================================
+// GET /api/sync
+// =========================================================================
+async fn trigger_manual_sync() -> impl IntoResponse {
+    let res = tokio::task::spawn_blocking(|| {
+        let conn = db::get_db_conn().map_err(|e| e)?;
+        db::sync_session_meta(&conn)
+    }).await.unwrap_or_else(|_| Err("執行緒失敗".to_string()));
+    match res {
+        Ok(n) => Json(serde_json::json!({"synced": n, "message": format!("同步完成，新增 {} 筆記錄", n)})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
     }
 }

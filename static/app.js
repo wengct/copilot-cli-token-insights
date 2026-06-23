@@ -1,15 +1,15 @@
 // Globals
 let tokenChartInstance = null;
 let monthlyChartInstance = null;
-let activeTab = 'daily'; // 'daily' or 'monthly'
+let activeTab = 'daily';
 let currentChartSessions = [];
 let currentMonthlyBreakdown = [];
 let currentSessionTotalTokens = 0;
 let currentSessionCacheTokens = 0;
+let currentSessionCacheCreationTokens = 0;
 let currentSessionInputTokens = 0;
 let currentSessionOutputTokens = 0;
-let currentSessionReasoningTokens = 0;
-let currentSessionCwd = '';
+let currentSessionProjectPath = '';
 let currentSessionModel = '';
 let availableDates = [];
 let pricingRules = [];
@@ -21,29 +21,24 @@ function getLocalDateString(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
-// Session table sorting state
 let currentSessions = [];
-let currentSortColumn = 'timestamp'; // Default sorted by starting time
-let currentSortDirection = 'desc';  // Default chronological order
+let currentSortColumn = 'start_time';
+let currentSortDirection = 'desc';
 
-// Monthly daily summary sorting state
 let monthlyDailySortColumn = 'date';
 let monthlyDailySortDirection = 'desc';
 
-// Live Auto-Refresh State
 let liveRefreshTimer = null;
 let liveProgressTimer = null;
-let secondsRemaining = 10;
-let refreshInterval = 10000; // default 10s
+let refreshInterval = 10000;
 
-// Language / Internationalization (i18n) State
 let currentLang = localStorage.getItem('lang') || 'zh-TW';
 let currentUsageData = null;
 let currentMonthlyData = null;
 
 const i18n = {
   'zh-TW': {
-    title: 'GitHub Copilot CLI Token Insights Dashboard',
+    title: 'Claude Code Token Insights Dashboard',
     tab_daily: '📊 每日即時',
     tab_monthly: '📅 月度彙整',
     select_date: '選擇日期',
@@ -64,18 +59,17 @@ const i18n = {
     stat_total_sessions: '總 Session 數',
     stat_total_tokens: '總 Token 消耗',
     stat_cache_read: '快取讀取: {val}',
-    stat_api_duration: '累積 API 耗時',
-    stat_total_requests: '總請求次數',
+    stat_api_duration: '累積時間',
     select_date_prompt: '請選擇日期以載入數據',
-    header_description: '監控您本地每天使用 GitHub Copilot CLI 的 Token 與會話詳細數據',
+    header_description: '監控您本地每天使用 Claude Code 的 Token 與會話詳細數據',
     setup_guide: '啟用教學',
-    setup_guide_title: '前置作業啟用教學',
+    setup_guide_title: '啟用教學',
     theme_toggle_title_dark: '切換至淺色主題',
     theme_toggle_title_light: '切換至深色主題',
     total_tokens_label: '總消耗 Token',
     input_tokens_label: '輸入 Token',
     output_tokens_label: '輸出 Token',
-    reasoning_tokens_label: '推理 Token',
+    cache_creation_tokens_label: '快取建立 Token',
     cache_read_label: '快取讀取',
     ratio_label: '佔比',
     total_label: '總計',
@@ -92,16 +86,16 @@ const i18n = {
     col_turns: 'Turn 數',
     col_input: '輸入',
     col_output: '輸出',
-    col_reasoning: '推理',
-    col_cache: '快取',
+    col_cache_creation: '快取建立',
+    col_cache: '快取讀取',
     col_total: '總計',
     col_cost: '估算費用',
-    col_duration: '耗時',
+    col_duration: '時長',
     col_time: '時間',
     estimated_cost_label: '估算費用',
     stat_cost_desc: '基於 pricing.csv 的估計金額',
     btn_pricing_sheet: '費用標準',
-    pricing_sheet_title: '💰 GitHub Copilot 費用標準表',
+    pricing_sheet_title: '💰 Anthropic Claude Code 費用標準表',
     pricing_intro: '此費用為本地估算，單價依據 <code>pricing.csv</code> 載入。單位為 1M Tokens (每百萬個 Token) 的美金價格：',
     placeholder_select_date: '請先在左側選擇一個日期',
     placeholder_no_sessions: '今日無任何會話記錄',
@@ -109,31 +103,28 @@ const i18n = {
     monthly_input_label: '月輸入 Token',
     monthly_output_label: '月輸出 Token',
     monthly_sessions_label: '月總會話數',
-    monthly_requests_count: '總請求: {count} 次',
+    monthly_duration: '累積時長: {val}',
     monthly_projects_title: '🏢 最常活動的專案目錄',
     monthly_models_title: '🤖 使用的模型佔比',
     col_rank: '排名',
-    col_project_cwd: '工作路徑 (CWD)',
+    col_project_path: '專案路徑',
     col_sessions_count: '會話數',
     placeholder_no_projects: '本月無任何專案記錄',
     placeholder_no_models: '本月無模型數據',
     drawer_category: '會話對話重建',
-    drawer_cwd: '工作路徑',
-    drawer_repo: '專案庫',
-    drawer_branch: 'Git 分支',
+    drawer_project_path: '專案路徑',
     drawer_model: 'Model',
     drawer_input: '輸入',
     drawer_output: '輸出',
-    drawer_reasoning: '推理',
-    drawer_cache: '快取',
-    drawer_compaction: '壓縮次數',
+    drawer_cache_creation: '快取建立',
+    drawer_cache: '快取讀取',
     drawer_total: '總計',
     drawer_loading: '對話時間軸還原中...',
-    drawer_load_failed_cleaned: '無法載入此 Session 事件，可能對應的 events.jsonl 檔案已被系統清理。',
+    drawer_load_failed_cleaned: '無法載入此 Session 事件，可能對應的 JSONL 檔案已被系統清理。',
     drawer_load_failed: '載入時間軸失敗。',
     drawer_no_events: '此會話無任何事件記錄',
     sender_user: '👤 USER',
-    sender_agent: '🤖 COPILOT AGENT',
+    sender_agent: '🤖 CLAUDE',
     thinking_tools: '思考中：調用工具指令...',
     copy_markdown: '複製 Markdown',
     copy_markdown_title: '複製 LLM 回答的原始 Markdown 內容',
@@ -141,7 +132,7 @@ const i18n = {
     collapse_reply: '收摺回覆',
     no_returned_data: '無回傳資料',
     data_truncated: '... [資料過長已被看板截斷顯示] ...',
-    tool_arguments: '調用參數 (Arguments)',
+    tool_calls_label: '工具調用 (Tool Calls)',
     tool_result: '執行輸出 (Result)',
     session_started: '會話開始 (Session Started)',
     session_ended: '會話結束 (Session Ended)',
@@ -159,30 +150,20 @@ const i18n = {
     monthly_load_failed: '載入月份彙整數據失敗',
     copy_success: '✅ 已複製！',
     copy_failed: '複製失敗，請手動選取複製',
-    setup_modal_title: '⚙️ GitHub Copilot CLI 前置設定與啟用教學',
-    setup_modal_intro: '本 Dashboard 主要是解析並呈現 GitHub Copilot CLI 的 <strong>Status Line (狀態列)</strong> 所收集的 Token 數據。我們將使用 <code>~/.copilot/statusline-token.sh</code> 進行每日數據統計與會話紀錄。',
-    setup_step_1: '<span>1️⃣</span> 1. 確認 script 有執行權限',
-    setup_step_1_desc: '首先建立設定目錄，並將專案中的收集腳本複製至家目錄的 <code>.copilot</code> 目錄下，最後賦予執行權限：',
+    setup_modal_title: '⚙️ Claude Code Token Insights 啟用教學',
+    setup_modal_intro: '本 Dashboard 自動從 <code>~/.claude/</code> 讀取 Claude Code 的原生 session 資料，無需額外設定 hook 或腳本。',
+    setup_step_1: '<span>1️⃣</span> 1. 安裝 Rust',
+    setup_step_1_desc: '確保您的系統已安裝 Rust。若尚未安裝，請執行：',
     btn_copy_cmd: '📋 複製指令',
-    setup_step_2: '<span>2️⃣</span> 2. 編輯設定檔',
-    setup_step_2_desc: '編輯或新增 Copilot CLI 的設定檔 <code>~/.copilot/settings.json</code>：',
-    setup_step_2_desc2: '在設定檔中加入以下 <code>statusLine</code> 設定內容：',
-    btn_copy_config: '📋 複製配置 JSON',
-    setup_home_hint_title: '💡 Home 目錄路徑提示：',
-    setup_home_hint_desc: '如果您的 <code>$HOME</code> 家目錄不是 <code id="lbl-detected-home">/home/&lt;username&gt;</code>，可在終端機執行 <code style="background: rgba(255,255,255,0.15)">echo $HOME</code> 查詢您的家目錄路徑，並對應修改 <code>command</code> 欄位的值。',
-    setup_step_3: '<span>3️⃣</span> 3. 已經有其他設定時（不要覆蓋）',
-    setup_step_3_desc: '若您的 <code>settings.json</code> 中已經有其他現成設定，<strong>請勿整檔覆蓋</strong>，只需將 <code>statusLine</code> 屬性合併加入即可，例如：',
-    btn_copy_merge_example: '📋 複製合併範例',
-    setup_step_4: '<span>4️⃣</span> 4. 重開 Copilot CLI',
-    setup_step_4_desc: '設定完成並存檔後，請<strong>退出目前的 Copilot CLI 聊天會話，並重新進入</strong>以套用全新設定。',
-    setup_step_5: '<span>5️⃣</span> 5. 檢查是否成功',
-    setup_step_5_desc: '進入 Copilot CLI 會話聊天後，畫面底部應該會看到由本專案腳本收集並精緻渲染出的狀態列，如：',
-    setup_troubleshooting: '⚠️ 除錯與檢查 (Troubleshooting)：',
-    setup_troubleshoot_a: '🔍 <strong>A. 若狀態列未正常出現，請先單獨測試腳本是否能正常執行：</strong>',
-    setup_troubleshoot_b: '🔍 <strong>B. 請確認 <code>settings.json</code> 是合法的 JSON 格式：</strong>',
-    empty_title: '歡迎使用 GitHub Copilot CLI Token Insights Dashboard',
-    empty_desc: '我們偵測到您的 <code>~/.copilot</code> 本地目錄中目前沒有使用數據。這是因為您還沒有啟用 GitHub Copilot CLI 的 Status Line 並部署數據收集腳本。請點選下方按鈕查看啟用教學！',
-    btn_empty_setup: '⚙️ 啟用前置設定教學',
+    setup_step_2: '<span>2️⃣</span> 2. 啟動 Dashboard',
+    setup_step_2_desc: '在專案目錄下執行：',
+    setup_step_3: '<span>3️⃣</span> 3. 開啟瀏覽器',
+    setup_step_3_desc: '在瀏覽器中開啟：',
+    setup_data_hint_title: '💡 資料來源說明：',
+    setup_data_hint_desc: 'Dashboard 自動從 <code>~/.claude/</code> 讀取資料。若您的 Claude Code 資料存放在其他位置，可設定 <code>CLAUDE_DIR</code> 環境變數指定路徑。',
+    empty_title: '歡迎使用 Claude Code Token Insights Dashboard',
+    empty_desc: '我們偵測到您的 <code>~/.claude/</code> 本地目錄中目前沒有 session 資料。請先使用 Claude Code 產生會話後，再點擊下方按鈕同步資料。',
+    btn_empty_setup: '⚙️ 查看啟用教學',
     btn_empty_refresh: '🔄 重新整理檢查',
     usage_report: '使用量報告：',
     loading_prefix: '載入中: ',
@@ -190,8 +171,8 @@ const i18n = {
     monthly_report: '月度統計報告：',
     cache_prefix: '快取: ',
     sync_db: '同步資料',
-    sync_db_title: '立即同步日誌檔到 SQLite 資料庫',
-    sync_db_loading: '正在同步日誌檔到資料庫...',
+    sync_db_title: '立即同步 Claude Code session 資料到 SQLite 資料庫',
+    sync_db_loading: '正在同步資料到資料庫...',
     sync_db_success: '資料庫同步成功！',
     sync_db_failed: '同步失敗: ',
     monthly_daily_summary_title: '📅 當月每日彙總',
@@ -199,7 +180,7 @@ const i18n = {
     placeholder_no_daily_summary: '本月無每日彙總數據',
   },
   'en': {
-    title: 'GitHub Copilot CLI Token Insights Dashboard',
+    title: 'Claude Code Token Insights Dashboard',
     tab_daily: '📊 Daily Real-time',
     tab_monthly: '📅 Monthly Summary',
     select_date: 'Select Date',
@@ -220,18 +201,17 @@ const i18n = {
     stat_total_sessions: 'Total Sessions',
     stat_total_tokens: 'Total Tokens',
     stat_cache_read: 'Cache Read: {val}',
-    stat_api_duration: 'API Duration',
-    stat_total_requests: 'Total Requests',
+    stat_api_duration: 'Total Duration',
     select_date_prompt: 'Please select a date to load data',
-    header_description: 'Monitor daily tokens and session details of GitHub Copilot CLI locally',
+    header_description: 'Monitor daily tokens and session details of Claude Code locally',
     setup_guide: 'Setup Guide',
-    setup_guide_title: 'Setup Guide & Activation Tutorial',
+    setup_guide_title: 'Setup Guide',
     theme_toggle_title_dark: 'Switch to Light Theme',
     theme_toggle_title_light: 'Switch to Dark Theme',
     total_tokens_label: 'Total Tokens',
     input_tokens_label: 'Input Tokens',
     output_tokens_label: 'Output Tokens',
-    reasoning_tokens_label: 'Reasoning Tokens',
+    cache_creation_tokens_label: 'Cache Creation Tokens',
     cache_read_label: 'Cache Read',
     ratio_label: 'Ratio',
     total_label: 'Total',
@@ -248,8 +228,8 @@ const i18n = {
     col_turns: 'Turns',
     col_input: 'Input',
     col_output: 'Output',
-    col_reasoning: 'Reasoning',
-    col_cache: 'Cache',
+    col_cache_creation: 'Cache Creation',
+    col_cache: 'Cache Read',
     col_total: 'Total',
     col_cost: 'Est. Cost',
     col_duration: 'Duration',
@@ -257,47 +237,44 @@ const i18n = {
     estimated_cost_label: 'Est. Cost',
     stat_cost_desc: 'Estimated based on pricing.csv',
     btn_pricing_sheet: 'Pricing Rates',
-    pricing_sheet_title: '💰 GitHub Copilot Pricing Rates',
-    pricing_intro: 'This cost is locally estimated based on rates loaded from <code>pricing.csv</code>. Rates are in USD per 1M Tokens (per million tokens):',
+    pricing_sheet_title: '💰 Anthropic Claude Code Pricing Rates',
+    pricing_intro: 'This cost is locally estimated based on rates loaded from <code>pricing.csv</code>. Rates are in USD per 1M Tokens:',
     placeholder_select_date: 'Please select a date on the left',
     placeholder_no_sessions: 'No session records found today',
     monthly_tokens_label: 'Monthly Total Tokens',
     monthly_input_label: 'Monthly Input Tokens',
     monthly_output_label: 'Monthly Output Tokens',
     monthly_sessions_label: 'Monthly Total Sessions',
-    monthly_requests_count: 'Total Requests: {count}',
+    monthly_duration: 'Duration: {val}',
     monthly_projects_title: '🏢 Most Active Project Directories',
     monthly_models_title: '🤖 Model Usage Breakdown',
     col_rank: 'Rank',
-    col_project_cwd: 'Working Directory (CWD)',
+    col_project_path: 'Project Path',
     col_sessions_count: 'Sessions',
     placeholder_no_projects: 'No project activity recorded this month',
     placeholder_no_models: 'No model usage data this month',
     drawer_category: 'Session Reconstruction',
-    drawer_cwd: 'Working CWD',
-    drawer_repo: 'Repository',
-    drawer_branch: 'Git Branch',
+    drawer_project_path: 'Project Path',
     drawer_model: 'Model',
     drawer_input: 'Input',
     drawer_output: 'Output',
-    drawer_reasoning: 'Reasoning',
-    drawer_cache: 'Cache',
-    drawer_compaction: 'Compactions',
+    drawer_cache_creation: 'Cache Creation',
+    drawer_cache: 'Cache Read',
     drawer_total: 'Total',
     drawer_loading: 'Reconstructing session timeline...',
-    drawer_load_failed_cleaned: 'Failed to load session events. The events.jsonl file might have been cleaned up by the system.',
+    drawer_load_failed_cleaned: 'Failed to load session events. The JSONL file might have been cleaned up.',
     drawer_load_failed: 'Failed to load timeline.',
     drawer_no_events: 'No event logs found in this session',
     sender_user: '👤 USER',
-    sender_agent: '🤖 COPILOT AGENT',
+    sender_agent: '🤖 CLAUDE',
     thinking_tools: 'Thinking: Calling tool commands...',
     copy_markdown: 'Copy Markdown',
     copy_markdown_title: 'Copy raw Markdown response',
     expand_reply: 'Expand Reply',
     collapse_reply: 'Collapse Reply',
     no_returned_data: 'No returned data',
-    data_truncated: '... [Data too long, truncated by the dashboard] ...',
-    tool_arguments: 'Arguments',
+    data_truncated: '... [Data too long, truncated] ...',
+    tool_calls_label: 'Tool Calls',
     tool_result: 'Result',
     session_started: 'Session Started',
     session_ended: 'Session Ended',
@@ -315,29 +292,19 @@ const i18n = {
     monthly_load_failed: 'Failed to load monthly aggregated data',
     copy_success: '✅ Copied!',
     copy_failed: 'Failed to copy, please select and copy manually',
-    setup_modal_title: '⚙️ GitHub Copilot CLI Configuration & Setup Guide',
-    setup_modal_intro: 'This dashboard parses and visualizes Token data collected from the GitHub Copilot CLI <strong>Status Line</strong>. We use <code>~/.copilot/statusline-token.sh</code> to record daily usage statistics and sessions.',
-    setup_step_1: '<span>1️⃣</span> 1. Set Script Execution Permissions',
-    setup_step_1_desc: 'First, create the configuration directory, copy the collection script to your home directory under <code>.copilot</code>, and grant execution permissions:',
+    setup_modal_title: '⚙️ Claude Code Token Insights Setup Guide',
+    setup_modal_intro: 'This dashboard automatically reads Claude Code native session data from <code>~/.claude/</code>. No shell hooks or scripts required.',
+    setup_step_1: '<span>1️⃣</span> 1. Install Rust',
+    setup_step_1_desc: 'Ensure Rust is installed. If not, run:',
     btn_copy_cmd: '📋 Copy Command',
-    setup_step_2: '<span>2️⃣</span> 2. Edit Configuration File',
-    setup_step_2_desc: 'Edit or create the Copilot CLI configuration file <code>~/.copilot/settings.json</code>:',
-    setup_step_2_desc2: 'Add the following <code>statusLine</code> configuration into the file:',
-    btn_copy_config: '📋 Copy Config JSON',
-    setup_home_hint_title: '💡 Home Directory Hint:',
-    setup_home_hint_desc: 'If your <code>$HOME</code> directory is not <code id="lbl-detected-home">/home/&lt;username&gt;</code>, run <code style="background: rgba(255,255,255,0.15)">echo $HOME</code> in terminal to check it, and modify the <code>command</code> field accordingly.',
-    setup_step_3: '<span>3️⃣</span> 3. Merging with Existing Settings (Do Not Overwrite)',
-    setup_step_3_desc: 'If your <code>settings.json</code> already has other configurations, <strong>do not overwrite the whole file</strong>. Simply merge the <code>statusLine</code> property into it, for example:',
-    btn_copy_merge_example: '📋 Copy Merge Example',
-    setup_step_4: '<span>4️⃣</span> 4. Restart Copilot CLI',
-    setup_step_4_desc: 'After saving the file, please <strong>exit your current Copilot CLI session and re-enter</strong> to apply the new settings.',
-    setup_step_5: '<span>5️⃣</span> 5. Verify the Installation',
-    setup_step_5_desc: 'After entering the Copilot CLI session, you should see a beautifully rendered status line generated by this project script at the bottom:',
-    setup_troubleshooting: '⚠️ Troubleshooting:',
-    setup_troubleshoot_a: '🔍 <strong>A. If the status line doesn\'t appear, test if the script runs standalone:</strong>',
-    setup_troubleshoot_b: '🔍 <strong>B. Please verify if settings.json is a valid JSON format:</strong>',
-    empty_title: 'Welcome to GitHub Copilot CLI Token Insights Dashboard',
-    empty_desc: 'We detected that there is currently no usage data in your local <code>~/.copilot</code> directory. This is because you haven\'t enabled the GitHub Copilot CLI Status Line or deployed the data collection script. Please click the button below to view the setup guide!',
+    setup_step_2: '<span>2️⃣</span> 2. Start the Dashboard',
+    setup_step_2_desc: 'In the project directory, run:',
+    setup_step_3: '<span>3️⃣</span> 3. Open in Browser',
+    setup_step_3_desc: 'Open in your browser:',
+    setup_data_hint_title: '💡 Data Source Note:',
+    setup_data_hint_desc: 'The dashboard reads data from <code>~/.claude/</code> automatically. Set the <code>CLAUDE_DIR</code> environment variable if needed.',
+    empty_title: 'Welcome to Claude Code Token Insights Dashboard',
+    empty_desc: 'No session data found in <code>~/.claude/</code>. Please use Claude Code to generate sessions first.',
     btn_empty_setup: '⚙️ View Setup Guide',
     btn_empty_refresh: '🔄 Reload and Check',
     usage_report: 'Usage Report: ',
@@ -346,8 +313,8 @@ const i18n = {
     monthly_report: 'Monthly Report: ',
     cache_prefix: 'Cache: ',
     sync_db: 'Sync Data',
-    sync_db_title: 'Sync local logs to SQLite database now',
-    sync_db_loading: 'Syncing log files to database...',
+    sync_db_title: 'Sync Claude Code session data to SQLite database now',
+    sync_db_loading: 'Syncing data to database...',
     sync_db_success: 'Database synced successfully!',
     sync_db_failed: 'Sync failed: ',
     monthly_daily_summary_title: '📅 Daily Summary of the Month',
@@ -362,42 +329,33 @@ function t(key) {
 
 function updateLanguageUI() {
   document.title = t('title');
-
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.getAttribute('data-i18n');
     el.innerHTML = t(key);
   });
-
   document.querySelectorAll('[data-i18n-title]').forEach(el => {
     const key = el.getAttribute('data-i18n-title');
     el.title = t(key);
   });
-
   document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
     const key = el.getAttribute('data-i18n-placeholder');
     el.placeholder = t(key);
   });
-
-  // Specific dynamic text updates
   const langSelect = document.getElementById('lang-select');
   if (langSelect) langSelect.value = currentLang;
-
   const themeBtn = document.getElementById('theme-toggle-btn');
   if (themeBtn) {
     const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
     themeBtn.title = currentTheme === 'dark' ? t('theme_toggle_title_dark') : t('theme_toggle_title_light');
   }
-
-  // Update dynamic placeholders/empty state if they are currently displayed
   const emptyContainer = document.getElementById('empty-state-container');
   if (emptyContainer && !emptyContainer.classList.contains('hidden')) {
     toggleEmptyState(true);
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  initApp();
-});
+document.addEventListener('DOMContentLoaded', () => { initApp(); });
+
 
 // =========================================================================
 // App Initialization & Event Listeners
@@ -407,16 +365,11 @@ function initApp() {
   const monthSelect = document.getElementById('month-select');
   const closeDrawerBtn = document.getElementById('close-drawer-btn');
   const drawerOverlay = document.getElementById('timeline-drawer');
-
-  // Tab Buttons
   const tabBtnDaily = document.getElementById('tab-btn-daily');
   const tabBtnMonthly = document.getElementById('tab-btn-monthly');
-
-  // Live Controls
   const liveToggle = document.getElementById('live-toggle');
   const liveInterval = document.getElementById('live-interval');
 
-  // Language selector
   const langSelect = document.getElementById('lang-select');
   if (langSelect) {
     langSelect.value = currentLang;
@@ -424,101 +377,57 @@ function initApp() {
       currentLang = e.target.value;
       localStorage.setItem('lang', currentLang);
       updateLanguageUI();
-      
-      // Re-render currently active view
-      if (activeTab === 'daily' && currentUsageData) {
-        renderDashboard(currentUsageData);
-      } else if (activeTab === 'monthly' && currentMonthlyData) {
-        renderMonthlyDashboard(currentMonthlyData);
-      }
+      if (activeTab === 'daily' && currentUsageData) renderDashboard(currentUsageData);
+      else if (activeTab === 'monthly' && currentMonthlyData) renderMonthlyDashboard(currentMonthlyData);
     });
   }
 
-  // 載入日期清單
   fetchDates();
-  // 載入月份清單
   fetchMonths();
-
-  // Initialize language UI translation
   updateLanguageUI();
 
-  // Tab切換監聽
   tabBtnDaily.addEventListener('click', () => switchTab('daily'));
   tabBtnMonthly.addEventListener('click', () => switchTab('monthly'));
 
-  // 監聽日期切換
-  dateSelect.addEventListener('change', (e) => {
-    if (e.target.value) {
-      loadUsageData(e.target.value);
-    }
-  });
-
-  // 點擊整個輸入框時自動打開小日曆
+  dateSelect.addEventListener('change', (e) => { if (e.target.value) loadUsageData(e.target.value); });
   dateSelect.addEventListener('click', (e) => {
     if (typeof e.target.showPicker === 'function') {
-      try {
-        e.target.showPicker();
-      } catch (err) {
-        console.warn('showPicker not supported or blocked:', err);
-      }
+      try { e.target.showPicker(); } catch (err) { console.warn('showPicker not supported:', err); }
     }
   });
 
-  // 監聽今日按鈕
   const btnToday = document.getElementById('btn-today');
   if (btnToday) {
     btnToday.addEventListener('click', async () => {
       const todayStr = getLocalDateString();
-      if (dateSelect) {
-        dateSelect.value = todayStr;
-      }
+      if (dateSelect) dateSelect.value = todayStr;
       await loadUsageData(todayStr);
-      showNotification(`${t('today_btn') || '今日'} ${todayStr}`, 'success');
+      showNotification(`${t('today_btn')} ${todayStr}`, 'success');
     });
   }
 
-  // 監聽月份切換
-  monthSelect.addEventListener('change', (e) => {
-    if (e.target.value) {
-      loadMonthlyData(e.target.value);
-    }
-  });
+  monthSelect.addEventListener('change', (e) => { if (e.target.value) loadMonthlyData(e.target.value); });
 
-  // 監聽重新整理按鈕
   const btnReloadDaily = document.getElementById('btn-reload-daily');
-  const btnReloadMonthly = document.getElementById('btn-reload-monthly');
-
   if (btnReloadDaily) {
     btnReloadDaily.addEventListener('click', async () => {
       btnReloadDaily.classList.add('loading');
-      try {
-        await reloadDailyData();
-        showNotification(t('reload_success'), 'success');
-      } catch (err) {
-        console.error('Reload failed:', err);
-        showNotification(t('reload_failed'), 'error');
-      } finally {
-        btnReloadDaily.classList.remove('loading');
-      }
+      try { await reloadDailyData(); showNotification(t('reload_success'), 'success'); }
+      catch (err) { showNotification(t('reload_failed'), 'error'); }
+      finally { btnReloadDaily.classList.remove('loading'); }
     });
   }
 
+  const btnReloadMonthly = document.getElementById('btn-reload-monthly');
   if (btnReloadMonthly) {
     btnReloadMonthly.addEventListener('click', async () => {
       btnReloadMonthly.classList.add('loading');
-      try {
-        await reloadMonthlyData();
-        showNotification(t('monthly_reload_success'), 'success');
-      } catch (err) {
-        console.error('Reload failed:', err);
-        showNotification(t('reload_failed'), 'error');
-      } finally {
-        btnReloadMonthly.classList.remove('loading');
-      }
+      try { await reloadMonthlyData(); showNotification(t('monthly_reload_success'), 'success'); }
+      catch (err) { showNotification(t('reload_failed'), 'error'); }
+      finally { btnReloadMonthly.classList.remove('loading'); }
     });
   }
 
-  // 監聽手動同步資料庫按鈕
   const btnSyncDb = document.getElementById('btn-sync-db');
   if (btnSyncDb) {
     btnSyncDb.addEventListener('click', async () => {
@@ -529,25 +438,14 @@ function initApp() {
         const res = await fetch('/api/sync');
         if (res.ok) {
           showNotification(t('sync_db_success'), 'success');
-          // 重新載入目前頁面的數據
-          if (activeTab === 'daily') {
-            await reloadDailyData();
-          } else {
-            await reloadMonthlyData();
-          }
-          // 同時重新整理可用的日期與月份清單
-          await fetchDates();
-          await fetchMonths();
+          if (activeTab === 'daily') await reloadDailyData(); else await reloadMonthlyData();
+          await fetchDates(); await fetchMonths();
         } else {
           let errMsg = res.statusText;
-          try {
-            const data = await res.json();
-            if (data && data.error) errMsg = data.error;
-          } catch (_) {}
+          try { const data = await res.json(); if (data && data.error) errMsg = data.error; } catch (_) {}
           showNotification(t('sync_db_failed') + errMsg, 'error');
         }
       } catch (err) {
-        console.error('Sync failed:', err);
         showNotification(t('sync_db_failed') + err.message, 'error');
       } finally {
         btnSyncDb.classList.remove('loading');
@@ -556,66 +454,32 @@ function initApp() {
     });
   }
 
-  // 監聽 Live 重新整理切換
-  liveToggle.addEventListener('change', (e) => {
-    toggleLiveRefresh(e.target.checked);
-  });
-
-  // 監聽 Live 頻率變更
+  liveToggle.addEventListener('change', (e) => toggleLiveRefresh(e.target.checked));
   liveInterval.addEventListener('change', (e) => {
     refreshInterval = parseInt(e.target.value, 10);
-    if (liveToggle.checked) {
-      // 重啟計時器
-      startLiveRefresh();
-    }
+    if (liveToggle.checked) startLiveRefresh();
   });
 
-  // 關閉抽屜彈窗
   closeDrawerBtn.addEventListener('click', closeDrawer);
-  drawerOverlay.addEventListener('click', (e) => {
-    if (e.target === drawerOverlay) {
-      closeDrawer();
-    }
-  });
+  drawerOverlay.addEventListener('click', (e) => { if (e.target === drawerOverlay) closeDrawer(); });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeDrawer(); closeSetupModal(); closePricingModal(); } });
 
-  // 支援 ESC 鍵關閉抽屜
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      closeDrawer();
-    }
-  });
-
-  // Sidebar Toggle Button
   const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
   const appContainer = document.querySelector('.app-container');
   if (sidebarToggleBtn && appContainer) {
-    sidebarToggleBtn.addEventListener('click', () => {
-      appContainer.classList.toggle('sidebar-collapsed');
-    });
-
-    // Collapse by default on medium/small screens (<= 1024px)
-    if (window.innerWidth <= 1024) {
-      appContainer.classList.add('sidebar-collapsed');
-    }
+    sidebarToggleBtn.addEventListener('click', () => appContainer.classList.toggle('sidebar-collapsed'));
+    if (window.innerWidth <= 1024) appContainer.classList.add('sidebar-collapsed');
   }
 
-  // 初始化深淺色主題切換
   initThemeToggle();
-
-  // 初始化表格欄位排序
   initTableSorting();
-
-  // 初始化前置設定教學 Modal 與事件
   initSetupGuide();
-
-  // 載入費用標準規則
   fetchPricingRules();
-  // 初始化費用標準 Modal 與事件
   initPricingModal();
 }
 
 // =========================================================================
-// Tab 切換邏輯
+// Tab Switching
 // =========================================================================
 function switchTab(tab) {
   if (activeTab === tab) return;
@@ -630,70 +494,42 @@ function switchTab(tab) {
   const monthlyView = document.getElementById('monthly-view-container');
 
   if (tab === 'daily') {
-    tabBtnDaily.classList.add('active');
-    tabBtnMonthly.classList.remove('active');
-    dailySelector.classList.remove('hidden');
-    monthlySelector.classList.add('hidden');
-    quickStats.classList.remove('hidden');
-    dailyView.classList.remove('hidden');
-    monthlyView.classList.add('hidden');
-
-    // 載入當前日期的數據
+    tabBtnDaily.classList.add('active'); tabBtnMonthly.classList.remove('active');
+    dailySelector.classList.remove('hidden'); monthlySelector.classList.add('hidden');
+    quickStats.classList.remove('hidden'); dailyView.classList.remove('hidden'); monthlyView.classList.add('hidden');
     const dateSelect = document.getElementById('date-select');
-    if (dateSelect.value) {
-      loadUsageData(dateSelect.value);
-    }
+    if (dateSelect.value) loadUsageData(dateSelect.value);
   } else {
-    // 關閉即時自動刷新以節省資源
     const liveToggle = document.getElementById('live-toggle');
-    if (liveToggle.checked) {
-      liveToggle.checked = false;
-      toggleLiveRefresh(false);
-    }
-
-    tabBtnDaily.classList.remove('active');
-    tabBtnMonthly.classList.add('active');
-    dailySelector.classList.add('hidden');
-    monthlySelector.classList.remove('hidden');
-    quickStats.classList.add('hidden');
-    dailyView.classList.add('hidden');
-    monthlyView.classList.remove('hidden');
-
-    // 載入當前月份的數據
+    if (liveToggle.checked) { liveToggle.checked = false; toggleLiveRefresh(false); }
+    tabBtnDaily.classList.remove('active'); tabBtnMonthly.classList.add('active');
+    dailySelector.classList.add('hidden'); monthlySelector.classList.remove('hidden');
+    quickStats.classList.add('hidden'); dailyView.classList.add('hidden'); monthlyView.classList.remove('hidden');
     const monthSelect = document.getElementById('month-select');
-    if (monthSelect.value) {
-      loadMonthlyData(monthSelect.value);
-    } else {
-      fetchMonths();
-    }
+    if (monthSelect.value) loadMonthlyData(monthSelect.value); else fetchMonths();
   }
 }
 
 // =========================================================================
-// 即時監控自動重新整理 (Live Auto-Refresh)
+// Live Auto-Refresh
 // =========================================================================
 function toggleLiveRefresh(enabled) {
   const panel = document.getElementById('live-settings-panel');
   const dateSelect = document.getElementById('date-select');
   const btnToday = document.getElementById('btn-today');
-
   if (enabled) {
     panel.style.display = 'block';
-    dateSelect.disabled = true; // 鎖定日期選擇
-    if (btnToday) btnToday.disabled = true; // 鎖定今日按鈕
-
-    // 自動切換到當天的日期 (以今天日期進行即時監控)
+    dateSelect.disabled = true;
+    if (btnToday) btnToday.disabled = true;
     const todayStr = getLocalDateString();
     dateSelect.value = todayStr;
     loadUsageData(todayStr);
-
     startLiveRefresh();
     showNotification(t('live_refresh_enabled'), 'success');
   } else {
     panel.style.display = 'none';
     dateSelect.disabled = false;
     if (btnToday) btnToday.disabled = false;
-
     stopLiveRefresh();
     showNotification(t('live_refresh_disabled'), 'info');
   }
@@ -701,47 +537,27 @@ function toggleLiveRefresh(enabled) {
 
 function startLiveRefresh() {
   stopLiveRefresh();
-
   const intervalInput = document.getElementById('live-interval');
   refreshInterval = parseInt(intervalInput.value, 10);
-
   const statusText = document.getElementById('live-status-text');
   const progressBar = document.getElementById('refresh-progress');
-  
   progressBar.style.width = '0%';
-
   let startTime = Date.now();
-  
-  // 100ms 進度條更新一次以確保極度順暢
   liveProgressTimer = setInterval(() => {
     let elapsed = Date.now() - startTime;
-    let percentage = Math.min((elapsed / refreshInterval) * 100, 100);
-    progressBar.style.width = `${percentage}%`;
-
-    let seconds = Math.max(Math.ceil((refreshInterval - elapsed) / 1000), 0);
-    statusText.textContent = t('status_monitoring').replace('{sec}', seconds);
+    progressBar.style.width = `${Math.min((elapsed / refreshInterval) * 100, 100)}%`;
+    statusText.textContent = t('status_monitoring').replace('{sec}', Math.max(Math.ceil((refreshInterval - elapsed) / 1000), 0));
   }, 100);
-
-  // 實際刷新 API 的定時器
   liveRefreshTimer = setInterval(async () => {
-    // 重設進度條與時間
     startTime = Date.now();
     progressBar.style.width = '0%';
-
-    // 重新載入最新資料
     await refreshLiveData();
   }, refreshInterval);
 }
 
 function stopLiveRefresh() {
-  if (liveRefreshTimer) {
-    clearInterval(liveRefreshTimer);
-    liveRefreshTimer = null;
-  }
-  if (liveProgressTimer) {
-    clearInterval(liveProgressTimer);
-    liveProgressTimer = null;
-  }
+  if (liveRefreshTimer) { clearInterval(liveRefreshTimer); liveRefreshTimer = null; }
+  if (liveProgressTimer) { clearInterval(liveProgressTimer); liveProgressTimer = null; }
   const progressBar = document.getElementById('refresh-progress');
   if (progressBar) progressBar.style.width = '0%';
 }
@@ -751,176 +567,116 @@ async function refreshLiveData() {
     const res = await fetch('/api/dates');
     const data = await res.json();
     availableDates = data.dates || [];
-    
     const dateSelect = document.getElementById('date-select');
     const todayStr = getLocalDateString();
-    
-    // 更新日曆的最小與最大限制
-    if (availableDates.length > 0) {
-      dateSelect.min = availableDates[availableDates.length - 1];
-    }
+    if (availableDates.length > 0) dateSelect.min = availableDates[availableDates.length - 1];
     dateSelect.max = todayStr;
-
-    // 即時自動刷新跨日支援：若目前時間已進入新的一天且與當前選擇不同，自動切換
     if (dateSelect.value !== todayStr) {
-      console.log(`即時監控跨日切換: ${dateSelect.value} -> ${todayStr}`);
       dateSelect.value = todayStr;
-      showNotification(`${t('detected_new_day') || '已跨日，自動切換至新的一天：'}${todayStr}`, 'info');
+      showNotification(`${t('detected_new_day')}${todayStr}`, 'info');
     }
-
-    // 載入所選日期 (即新的 todayStr) 數據
     await loadUsageData(dateSelect.value);
   } catch (err) {
-    console.error('即時刷新失敗:', err);
     const statusText = document.getElementById('live-status-text');
     if (statusText) statusText.textContent = t('status_failed');
   }
 }
 
 // =========================================================================
-// API 呼叫: 載入日期清單
+// Fetch Dates
 // =========================================================================
 async function fetchDates(selectedDate = null) {
   try {
     const res = await fetch('/api/dates');
     const data = await res.json();
-    
     const dateSelect = document.getElementById('date-select');
     availableDates = data.dates || [];
-
-    if (availableDates.length === 0) {
-      toggleEmptyState(true);
-      return;
-    }
-
+    if (availableDates.length === 0) { toggleEmptyState(true); return; }
     toggleEmptyState(false);
-    
-    // 設定日曆最小與最大值
     const oldestDate = availableDates[availableDates.length - 1];
     const newestDate = availableDates[0];
     const todayStr = getLocalDateString();
-    
     dateSelect.min = oldestDate;
     dateSelect.max = todayStr;
-
     let dateToLoad = selectedDate;
     if (!dateToLoad) {
-      // 若有啟用即時刷新，預設為今日；否則預設為最新有日誌的日期
       const liveToggle = document.getElementById('live-toggle');
-      if (liveToggle && liveToggle.checked) {
-        dateToLoad = todayStr;
-      } else {
-        dateToLoad = newestDate;
-      }
+      dateToLoad = (liveToggle && liveToggle.checked) ? todayStr : newestDate;
     }
-
     dateSelect.value = dateToLoad;
-
-    // 載入所選或最新一天的數據
     await loadUsageData(dateToLoad);
-
   } catch (err) {
-    console.error('獲取日期清單失敗:', err);
     showNotification(t('server_conn_failed'), 'error');
   }
 }
 
 async function reloadDailyData() {
   const dateSelect = document.getElementById('date-select');
-  const selectedDate = dateSelect.value;
-  await fetchDates(selectedDate);
+  await fetchDates(dateSelect.value);
 }
 
-// =========================================================================
-// API 呼叫: 載入當日使用量數據
-// =========================================================================
 async function loadUsageData(date) {
   try {
-    // 顯示加載動畫 (可在此擴展)
     document.getElementById('current-date-title').innerHTML = `<span class="title-icon">⌛</span> <span class="title-text">${t('loading_prefix')}${date}...</span>`;
-
     const res = await fetch(`/api/usage/${date}`);
-    if (res.status === 404) {
-      showNotification(t('date_not_found'), 'error');
-      return;
-    }
-    
+    if (res.status === 404) { showNotification(t('date_not_found'), 'error'); return; }
     const data = await res.json();
     renderDashboard(data);
-
   } catch (err) {
-    console.error('載入使用量失敗:', err);
     showNotification(t('load_failed'), 'error');
   }
 }
 
 // =========================================================================
-// 渲染主看板數據
+// Render Dashboard
 // =========================================================================
 function renderDashboard(data) {
   currentUsageData = data;
   const { date, summary, sessions } = data;
-
-  // 1. 更新標題與版本
   document.getElementById('current-date-title').innerHTML = `<span class="title-icon">📅</span> <span class="title-text">${t('usage_report')}${date}</span>`;
-  if (data.raw_entries && data.raw_entries.length > 0) {
-    const firstVer = data.raw_entries[0].version;
-    document.getElementById('copilot-version-badge').textContent = `CLI v${firstVer || '1.0.x'}`;
-  }
+  const firstModel = sessions && sessions.length > 0 ? sessions[0].model : '';
+  const versionBadge = document.getElementById('copilot-version-badge');
+  if (versionBadge) versionBadge.textContent = firstModel || '--';
 
-  // 2. 更新側邊欄指標卡片
   document.getElementById('mini-sessions').textContent = summary.total_sessions;
   document.getElementById('mini-tokens').textContent = formatToken(summary.total_tokens);
   document.getElementById('mini-cache').textContent = `${t('cache_read_label')}: ${formatToken(summary.total_cache_read_tokens)}`;
   document.getElementById('mini-cost').textContent = formatCost(summary.total_cost_usd || 0);
-  document.getElementById('mini-duration').textContent = formatDuration(summary.total_duration_ms);
-  document.getElementById('mini-requests').textContent = summary.total_requests;
+  document.getElementById('mini-duration').textContent = formatDurationMinutes(summary.total_duration_minutes);
 
-  // 3. 更新主看板 Metric Cards
   document.getElementById('stat-total-tokens').textContent = formatToken(summary.total_tokens);
   document.getElementById('stat-cache-read').textContent = `${t('cache_read_label')}: ${formatToken(summary.total_cache_read_tokens)} (${calculatePercentage(summary.total_cache_read_tokens, summary.total_tokens)})`;
-
   document.getElementById('stat-input-tokens').textContent = formatToken(summary.total_input_tokens);
   document.getElementById('stat-input-pct').textContent = `${t('ratio_label')}: ${calculatePercentage(summary.total_input_tokens, summary.total_tokens)}`;
-
   document.getElementById('stat-output-tokens').textContent = formatToken(summary.total_output_tokens);
   document.getElementById('stat-output-pct').textContent = `${t('ratio_label')}: ${calculatePercentage(summary.total_output_tokens, summary.total_tokens)}`;
-
-  document.getElementById('stat-reasoning-tokens').textContent = formatToken(summary.total_reasoning_tokens);
-  document.getElementById('stat-reasoning-pct').textContent = `${t('ratio_label')}: ${calculatePercentage(summary.total_reasoning_tokens, summary.total_tokens)}`;
-
+  document.getElementById('stat-cache-creation-tokens').textContent = formatToken(summary.total_cache_creation_tokens || 0);
+  document.getElementById('stat-cache-creation-pct').textContent = `${t('ratio_label')}: ${calculatePercentage(summary.total_cache_creation_tokens || 0, summary.total_tokens)}`;
   document.getElementById('stat-total-cost').textContent = formatCost(summary.total_cost_usd || 0);
 
-  // 4. 繪製 Token 圖表
   renderChart(sessions);
-
-  // 5. 渲染 Session 列表
   currentSessions = [...sessions];
   sortAndRenderSessionTable();
 }
 
 // =========================================================================
-// 渲染 Chart.js Token 使用趨勢圖
+// Chart
 // =========================================================================
 function renderChart(sessions) {
   const canvas = document.getElementById('tokenChart');
-
-  // 只取前 15 個 Session 來畫，避免過於擁擠
-  const sortedSessions = [...sessions].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const sortedSessions = [...sessions].sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
   const displaySessions = sortedSessions.slice(-15);
-
   currentChartSessions = displaySessions;
 
-  const labels = displaySessions.map((s, idx) => {
-    const timeStr = s.timestamp ? formatLocalTime(s.timestamp, false) : '';
-    return `${timeStr} (${s.session_name.substring(0, 10)}...)`;
+  const labels = displaySessions.map((s) => {
+    const timeStr = s.start_time ? formatLocalTime(s.start_time, false) : '';
+    const name = (s.first_prompt || '').substring(0, 10);
+    return `${timeStr} (${name}...)`;
   });
-
   const tokenData = displaySessions.map(s => s.total_tokens);
   const cacheData = displaySessions.map(s => s.total_cache_read_tokens || 0);
-  const maxTurnData = displaySessions.map(s => s.max_turn_no);
+  const turnData = displaySessions.map(s => s.user_message_count || 0);
 
-  // 若圖表已存在，則動態更新數據以達到平滑變動效果
   if (tokenChartInstance) {
     tokenChartInstance.data.labels = labels;
     tokenChartInstance.data.datasets[0].label = t('chart_token_label');
@@ -928,191 +684,62 @@ function renderChart(sessions) {
     tokenChartInstance.data.datasets[2].label = t('chart_turn_label');
     tokenChartInstance.data.datasets[0].data = tokenData;
     tokenChartInstance.data.datasets[1].data = cacheData;
-    tokenChartInstance.data.datasets[2].data = maxTurnData;
-    if (tokenChartInstance.options.scales && tokenChartInstance.options.scales.y && tokenChartInstance.options.scales.y.title) {
-      tokenChartInstance.options.scales.y.title.text = t('col_total');
-    }
-    if (tokenChartInstance.options.scales && tokenChartInstance.options.scales.y1 && tokenChartInstance.options.scales.y1.title) {
-      tokenChartInstance.options.scales.y1.title.text = t('col_turns');
-    }
-    tokenChartInstance.update();
-    return;
+    tokenChartInstance.data.datasets[2].data = turnData;
+    if (tokenChartInstance.options.scales.y.title) tokenChartInstance.options.scales.y.title.text = t('col_total');
+    if (tokenChartInstance.options.scales.y1.title) tokenChartInstance.options.scales.y1.title.text = t('col_turns');
+    tokenChartInstance.update(); return;
   }
 
   tokenChartInstance = new Chart(canvas, {
-    type: 'bar',
-    data: {
-      labels: labels,
+    type: 'bar', data: { labels,
       datasets: [
-        {
-          label: t('chart_token_label'),
-          data: tokenData,
-          backgroundColor: 'rgba(0, 242, 254, 0.22)',
-          borderColor: '#00f2fe',
-          borderWidth: 1.5,
-          borderRadius: 6,
-          yAxisID: 'y',
-          grouped: false,
-          barPercentage: 0.8,
-        },
-        {
-          label: t('chart_cache_label'),
-          data: cacheData,
-          backgroundColor: 'rgba(129, 140, 248, 0.75)',
-          borderColor: '#818cf8',
-          borderWidth: 1.5,
-          borderRadius: 6,
-          yAxisID: 'y',
-          grouped: false,
-          barPercentage: 0.8,
-        },
-        {
-          label: t('chart_turn_label'),
-          data: maxTurnData,
-          type: 'line',
-          borderColor: '#9b51e0',
-          backgroundColor: 'rgba(155, 81, 224, 0.2)',
-          borderWidth: 2,
-          pointBackgroundColor: '#9b51e0',
-          pointRadius: 4,
-          tension: 0.3,
-          yAxisID: 'y1',
-        }
+        { label: t('chart_token_label'), data: tokenData, backgroundColor: 'rgba(0, 242, 254, 0.22)', borderColor: '#00f2fe', borderWidth: 1.5, borderRadius: 6, yAxisID: 'y', grouped: false, barPercentage: 0.8 },
+        { label: t('chart_cache_label'), data: cacheData, backgroundColor: 'rgba(129, 140, 248, 0.75)', borderColor: '#818cf8', borderWidth: 1.5, borderRadius: 6, yAxisID: 'y', grouped: false, barPercentage: 0.8 },
+        { label: t('chart_turn_label'), data: turnData, type: 'line', borderColor: '#9b51e0', backgroundColor: 'rgba(155, 81, 224, 0.2)', borderWidth: 2, pointBackgroundColor: '#9b51e0', pointRadius: 4, tension: 0.3, yAxisID: 'y1' }
       ]
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
+      responsive: true, maintainAspectRatio: false,
       onClick: (event, elements) => {
         if (elements && elements.length > 0) {
-          const index = elements[0].index;
-          const session = currentChartSessions[index];
-          if (session) {
-            openSessionTimeline(session.session_id, session.session_name, session.total_tokens, session.total_cache_read_tokens);
-          }
+          const s = currentChartSessions[elements[0].index];
+          if (s) openSessionTimeline(s.session_id, s.first_prompt, s.total_tokens, s.total_cache_read_tokens, s.total_cache_creation_tokens, s.total_input_tokens, s.total_output_tokens, s.project_path, s.model);
         }
       },
-      onHover: (event, activeElements) => {
-        canvas.style.cursor = activeElements.length ? 'pointer' : 'default';
-      },
+      onHover: (event, activeElements) => { canvas.style.cursor = activeElements.length ? 'pointer' : 'default'; },
       plugins: {
-        legend: {
-          labels: {
-            color: '#f3f4f6',
-            font: {
-              family: 'Outfit'
-            }
-          }
-        },
-        tooltip: {
-          padding: 12,
-          backgroundColor: 'rgba(15, 18, 29, 0.95)',
-          titleColor: '#00f2fe',
-          bodyColor: '#f3f4f6',
-          borderColor: 'rgba(255, 255, 255, 0.1)',
-          borderWidth: 1,
-          callbacks: {
-            label: (context) => {
-              const label = context.dataset.label || '';
-              const value = context.parsed.y;
-              if (label.includes('Token')) {
-                return `${label}: ${formatToken(value)} (${formatNumber(value)})`;
-              }
-              return `${label}: ${formatNumber(value)}`;
-            }
-          }
+        legend: { labels: { color: '#f3f4f6', font: { family: 'Outfit' } } },
+        tooltip: { padding: 12, backgroundColor: 'rgba(15, 18, 29, 0.95)', titleColor: '#00f2fe', bodyColor: '#f3f4f6', borderColor: 'rgba(255, 255, 255, 0.1)', borderWidth: 1,
+          callbacks: { label: (context) => { const label = context.dataset.label || ''; const value = context.parsed.y; return label.includes('Token') ? `${label}: ${formatToken(value)} (${formatNumber(value)})` : `${label}: ${formatNumber(value)}`; } }
         }
       },
       scales: {
-        x: {
-          stacked: false,
-          grid: {
-            color: 'rgba(255, 255, 255, 0.05)'
-          },
-          ticks: {
-            color: '#9ca3af',
-            font: {
-              size: 10
-            }
-          }
-        },
-        y: {
-          stacked: false,
-          type: 'linear',
-          position: 'left',
-          grid: {
-            color: 'rgba(255, 255, 255, 0.05)'
-          },
-          ticks: {
-            color: '#9ca3af',
-            callback: (value) => formatToken(value)
-          },
-          title: {
-            display: true,
-            text: t('col_total'),
-            color: '#f3f4f6'
-          }
-        },
-        y1: {
-          stacked: false,
-          type: 'linear',
-          position: 'right',
-          grid: {
-            drawOnChartArea: false, // 不畫右邊 y1 的格線避免混淆
-          },
-          ticks: {
-            color: '#9ca3af',
-            stepSize: 1
-          },
-          title: {
-            display: true,
-            text: t('col_turns')
-          }
-        }
+        x: { stacked: false, grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#9ca3af', font: { size: 10 } } },
+        y: { stacked: false, type: 'linear', position: 'left', grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#9ca3af', callback: (value) => formatToken(value) }, title: { display: true, text: t('col_total'), color: '#f3f4f6' } },
+        y1: { stacked: false, type: 'linear', position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#9ca3af', stepSize: 1 }, title: { display: true, text: t('col_turns') } }
       }
     }
   });
-
-  // 根據當前主題更新圖表樣式
-  const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
-  updateChartsTheme(currentTheme);
+  updateChartsTheme(document.documentElement.getAttribute('data-theme') || 'dark');
 }
 
 // =========================================================================
-// 會話列表排序邏輯與事件監聽
+// Table Sorting
 // =========================================================================
 function initTableSorting() {
-  const headers = document.querySelectorAll('.premium-table th.sortable');
-  headers.forEach(th => {
+  document.querySelectorAll('.premium-table th.sortable').forEach(th => {
     th.addEventListener('click', () => {
       const column = th.getAttribute('data-sort');
       const tableType = th.getAttribute('data-table');
-      
       if (tableType === 'monthly') {
-        // 月度每日彙總表格排序
-        if (monthlyDailySortColumn === column) {
-          monthlyDailySortDirection = monthlyDailySortDirection === 'asc' ? 'desc' : 'asc';
-        } else {
-          monthlyDailySortColumn = column;
-          monthlyDailySortDirection = 'desc'; // 預設降冪排序
-        }
+        if (monthlyDailySortColumn === column) monthlyDailySortDirection = monthlyDailySortDirection === 'asc' ? 'desc' : 'asc';
+        else { monthlyDailySortColumn = column; monthlyDailySortDirection = 'desc'; }
         sortAndRenderMonthlyDailyTable();
       } else {
-        // 會話列表排序
-        if (currentSortColumn === column) {
-          // 切換排序方向
-          currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
-        } else {
+        if (currentSortColumn === column) currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+        else {
           currentSortColumn = column;
-          // 數值欄位預設由大到小排序，字串/時間欄位預設由小到大排序
-          const numericColumns = [
-            'max_turn_no', 
-            'total_input_tokens', 
-            'total_output_tokens', 
-            'total_cache_read_tokens', 
-            'total_tokens', 
-            'duration_ms'
-          ];
+          const numericColumns = ['user_message_count','total_input_tokens','total_output_tokens','total_cache_creation_tokens','total_cache_read_tokens','total_tokens','duration_minutes'];
           currentSortDirection = numericColumns.includes(column) ? 'desc' : 'asc';
         }
         sortAndRenderSessionTable();
@@ -1122,143 +749,95 @@ function initTableSorting() {
 }
 
 function sortAndRenderSessionTable() {
-  if (!currentSessions || currentSessions.length === 0) {
-    renderSessionTable([]);
-    return;
-  }
-
+  if (!currentSessions || currentSessions.length === 0) { renderSessionTable([]); return; }
   currentSessions.sort((a, b) => {
-    let valA = a[currentSortColumn];
-    let valB = b[currentSortColumn];
-
-    // 空值處理
-    if (valA === undefined || valA === null) valA = 0;
-    if (valB === undefined || valB === null) valB = 0;
-
-    // 字串欄位使用 localeCompare 來支援中英文混合排序
-    if (typeof valA === 'string' && typeof valB === 'string') {
-      return currentSortDirection === 'asc' 
-        ? valA.localeCompare(valB) 
-        : valB.localeCompare(valA);
-    }
-
-    // 數值比較
+    let valA = a[currentSortColumn] ?? 0;
+    let valB = b[currentSortColumn] ?? 0;
+    if (typeof valA === 'string' && typeof valB === 'string') return currentSortDirection === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
     return currentSortDirection === 'asc' ? valA - valB : valB - valA;
   });
-
   renderSessionTable(currentSessions);
   updateSortHeadersUI();
 }
 
 function updateSortHeadersUI() {
-  const headers = document.querySelectorAll('.premium-table th.sortable:not([data-table="monthly"])');
-  headers.forEach(th => {
+  document.querySelectorAll('.premium-table th.sortable:not([data-table="monthly"])').forEach(th => {
     const column = th.getAttribute('data-sort');
     const icon = th.querySelector('.sort-icon');
     if (!icon) return;
-
     th.classList.remove('sorted-asc', 'sorted-desc');
-    
     if (column === currentSortColumn) {
-      if (currentSortDirection === 'asc') {
-        th.classList.add('sorted-asc');
-        icon.innerHTML = '▴';
-      } else {
-        th.classList.add('sorted-desc');
-        icon.innerHTML = '▾';
-      }
-    } else {
-      icon.innerHTML = '<span class="sort-icon-placeholder">▴▾</span>';
-    }
+      th.classList.add(currentSortDirection === 'asc' ? 'sorted-asc' : 'sorted-desc');
+      icon.innerHTML = currentSortDirection === 'asc' ? '▴' : '▾';
+    } else { icon.innerHTML = '<span class="sort-icon-placeholder">▴▾</span>'; }
   });
 }
 
 // =========================================================================
-// 渲染 Session 列表 Table
+// Session Table
 // =========================================================================
 function renderSessionTable(sessions) {
   const tbody = document.getElementById('session-list-body');
   document.getElementById('session-count').textContent = `${sessions.length} Sessions`;
   tbody.innerHTML = '';
-
   if (sessions.length === 0) {
     tbody.innerHTML = `<tr><td colspan="11" class="placeholder-text">${t('placeholder_no_sessions')}</td></tr>`;
     return;
   }
-
   sessions.forEach(s => {
     const tr = document.createElement('tr');
-    
-    // 格式化時間
-    const timeFormatted = s.timestamp ? formatLocalTime(s.timestamp, true) : '-';
-
+    const timeFormatted = s.start_time ? formatLocalTime(s.start_time, true) : '-';
+    const displayName = s.first_prompt || s.session_id;
     tr.innerHTML = `
-      <td class="session-name-cell" title="${escapeHtml(s.session_name)}">
-        ${escapeHtml(s.session_name)}
-        <span class="session-id-sub">${s.session_id}</span>
-      </td>
+      <td class="session-name-cell" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}<span class="session-id-sub">${s.session_id}</span></td>
       <td><span class="badge highlight">${escapeHtml(s.model)}</span></td>
-      <td><span class="badge">${s.max_turn_no}</span></td>
+      <td><span class="badge">${s.user_message_count || 0}</span></td>
       <td style="color: var(--text-secondary);">${formatToken(s.total_input_tokens || 0)}</td>
       <td style="color: var(--text-secondary);">${formatToken(s.total_output_tokens || 0)}</td>
-      <td style="color: #a78bfa;">${formatToken(s.total_reasoning_tokens || 0)}</td>
+      <td style="color: #a78bfa;">${formatToken(s.total_cache_creation_tokens || 0)}</td>
       <td style="color: #34d399;">${formatToken(s.total_cache_read_tokens || 0)}</td>
       <td style="font-weight: 700; color: #fbbf24;">${formatToken(s.total_tokens)}</td>
       <td style="font-weight: 700; color: var(--accent-cyan);">${formatCost(s.cost_usd || 0)}</td>
-      <td>${formatDuration(s.duration_ms)}</td>
+      <td>${formatDurationMinutes(s.duration_minutes)}</td>
       <td style="color: var(--text-secondary);">${timeFormatted}</td>
     `;
-
-    // 當點擊 Session 時，開啟對話詳細還原
-    tr.addEventListener('click', () => {
-      openSessionTimeline(s.session_id, s.session_name, s.total_tokens, s.total_cache_read_tokens, s.total_input_tokens, s.total_output_tokens, s.total_reasoning_tokens, s.cwd, s.model);
-    });
-
+    tr.addEventListener('click', () => openSessionTimeline(s.session_id, s.first_prompt, s.total_tokens, s.total_cache_read_tokens, s.total_cache_creation_tokens, s.total_input_tokens, s.total_output_tokens, s.project_path, s.model));
     tbody.appendChild(tr);
   });
 }
 
 // =========================================================================
-// API 呼叫: 載入並渲染特定 Session 對話時間軸 (Timeline)
+// Session Timeline
 // =========================================================================
-async function openSessionTimeline(sessionId, sessionName, totalTokens, cacheReadTokens, inputTokens, outputTokens, reasoningTokens, cwd, model) {
+async function openSessionTimeline(sessionId, firstPrompt, totalTokens, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens, projectPath, model) {
   const drawerOverlay = document.getElementById('timeline-drawer');
   const timelineContainer = document.getElementById('timeline-items');
 
-  // 保存當前點擊之 Session 的正確統計與資訊以作為 Fallback
   currentSessionTotalTokens = totalTokens || 0;
   currentSessionCacheTokens = cacheReadTokens || 0;
+  currentSessionCacheCreationTokens = cacheCreationTokens || 0;
   currentSessionInputTokens = inputTokens || 0;
   currentSessionOutputTokens = outputTokens || 0;
-  currentSessionReasoningTokens = reasoningTokens || 0;
-  currentSessionCwd = cwd || '';
+  currentSessionProjectPath = projectPath || '';
   currentSessionModel = model || '';
 
-  // 設定基礎抬頭 (截斷至 100 字元，滑鼠移過去可以看到全部)
-  let displayName = sessionName || '';
-  if (displayName.length > 100) {
-    displayName = displayName.substring(0, 100) + '...';
-  }
+  let displayName = firstPrompt || sessionId || '';
+  if (displayName.length > 100) displayName = displayName.substring(0, 100) + '...';
   const nameEl = document.getElementById('drawer-session-name');
   nameEl.textContent = displayName;
-  nameEl.title = sessionName || '';
+  nameEl.title = firstPrompt || '';
   document.getElementById('drawer-session-id').textContent = sessionId;
 
-  // 更新會話 Token & 基礎資訊（立即呈現在畫面上）
-  document.getElementById('meta-cwd').textContent = cwd || '-';
-  document.getElementById('meta-cwd').title = cwd || '';
+  document.getElementById('meta-cwd').textContent = projectPath || '-';
+  document.getElementById('meta-cwd').title = projectPath || '';
   document.getElementById('meta-model').textContent = model || '-';
   document.getElementById('meta-tokens').textContent = formatToken(totalTokens || 0);
   document.getElementById('meta-cache').textContent = formatToken(cacheReadTokens || 0);
-  document.getElementById('meta-compaction').textContent = '-';
+  document.getElementById('meta-cache-creation').textContent = formatToken(cacheCreationTokens || 0);
   document.getElementById('meta-input').textContent = formatToken(inputTokens || 0);
   document.getElementById('meta-output').textContent = formatToken(outputTokens || 0);
-  document.getElementById('meta-reasoning').textContent = formatToken(reasoningTokens || 0);
 
-  // 顯示加載動畫
   timelineContainer.innerHTML = `<div class="placeholder-text">${t('drawer_loading')}</div>`;
-  
-  // 顯示抽屜面板
   drawerOverlay.classList.add('active');
 
   try {
@@ -1267,62 +846,39 @@ async function openSessionTimeline(sessionId, sessionName, totalTokens, cacheRea
       timelineContainer.innerHTML = `<div class="placeholder-text" style="color: var(--neon-red);">${t('drawer_load_failed_cleaned')}</div>`;
       return;
     }
-
-    const data = await res.json();
-    renderTimeline(data);
-
+    renderTimeline(await res.json());
   } catch (err) {
-    console.error('獲取會話細節失敗:', err);
     timelineContainer.innerHTML = `<div class="placeholder-text" style="color: var(--neon-red);">${t('drawer_load_failed')}</div>`;
   }
 }
 
-// 關閉抽屜
-function closeDrawer() {
-  document.getElementById('timeline-drawer').classList.remove('active');
-}
+function closeDrawer() { document.getElementById('timeline-drawer').classList.remove('active'); }
 
 // =========================================================================
-// 渲染 Session 詳細時間軸 (Timeline) 內容
+// Render Timeline
 // =========================================================================
 function renderTimeline(data) {
   const { metadata, timeline } = data;
   const timelineContainer = document.getElementById('timeline-items');
   timelineContainer.innerHTML = '';
 
-  // 取得最終使用的基礎資訊（API 回傳優先，沒有則 fallback 到列表正確欄位）
-  const finalCwd = metadata.cwd || currentSessionCwd || '-';
-  const finalModel = metadata.selected_model || currentSessionModel || '-';
-
-  // 更新 Metadata 區塊
-  document.getElementById('meta-cwd').textContent = finalCwd;
-  document.getElementById('meta-cwd').title = finalCwd;
-  document.getElementById('meta-branch').textContent = metadata.git_branch || '-';
+  const finalProjectPath = metadata.project_path || currentSessionProjectPath || '-';
+  const finalModel = metadata.model || currentSessionModel || '-';
+  document.getElementById('meta-cwd').textContent = finalProjectPath;
+  document.getElementById('meta-cwd').title = finalProjectPath;
   document.getElementById('meta-model').textContent = finalModel;
-  document.getElementById('meta-repo').textContent = metadata.repository || '-';
-  document.getElementById('meta-repo').title = metadata.repository || '';
 
-  // 取得最終使用的 Token 數據（若單一 session events 日誌無 token stats，則使用列表正確累積數據）
-  const finalTotal = metadata.total_tokens || currentSessionTotalTokens || 0;
-  const finalCache = metadata.total_cache_read_tokens || currentSessionCacheTokens || 0;
-  const finalInput = metadata.total_input_tokens || currentSessionInputTokens || 0;
-  const finalOutput = metadata.total_output_tokens || currentSessionOutputTokens || 0;
-  const finalReasoning = metadata.total_reasoning_tokens || currentSessionReasoningTokens || 0;
-
-  document.getElementById('meta-tokens').textContent = formatToken(finalTotal);
-  document.getElementById('meta-cache').textContent = formatToken(finalCache);
-  document.getElementById('meta-compaction').textContent = metadata.compaction_count || 0;
-  document.getElementById('meta-input').textContent = formatToken(finalInput);
-  document.getElementById('meta-output').textContent = formatToken(finalOutput);
-  document.getElementById('meta-reasoning').textContent = formatToken(finalReasoning);
+  document.getElementById('meta-tokens').textContent = formatToken(metadata.total_tokens || currentSessionTotalTokens || 0);
+  document.getElementById('meta-cache').textContent = formatToken(metadata.total_cache_read_tokens || currentSessionCacheTokens || 0);
+  document.getElementById('meta-cache-creation').textContent = formatToken(metadata.total_cache_creation_tokens || currentSessionCacheCreationTokens || 0);
+  document.getElementById('meta-input').textContent = formatToken(metadata.total_input_tokens || currentSessionInputTokens || 0);
+  document.getElementById('meta-output').textContent = formatToken(metadata.total_output_tokens || currentSessionOutputTokens || 0);
 
   if (!timeline || timeline.length === 0) {
     timelineContainer.innerHTML = `<div class="placeholder-text">${t('drawer_no_events')}</div>`;
     return;
   }
 
-  // 渲染時間軸物件，使用單一回合序號進行對齊
-  const hasUserPrompts = timeline.some(item => item.event_type === 'UserPrompt');
   let currentTurnNo = 1;
   let isFirstPrompt = true;
 
@@ -1333,289 +889,179 @@ function renderTimeline(data) {
 
     switch (item.event_type) {
       case 'UserPrompt': {
-        if (!isFirstPrompt) {
-          currentTurnNo++;
-        }
+        if (!isFirstPrompt) currentTurnNo++;
         isFirstPrompt = false;
         const prompt = item.event_data.prompt;
-        const turnNo = item.event_data.turn_no || currentTurnNo;
-        
-        let attachmentsHTML = '';
-        if (item.event_data.attachments && item.event_data.attachments.length > 0) {
-          attachmentsHTML = `<div class="bubble-attachments">`;
-          item.event_data.attachments.forEach(att => {
-            const path = att.filePath || att.path || '檔名未知';
-            const basename = path.split('/').pop();
-            const attType = att.type || 'file';
-            attachmentsHTML += `
-              <div class="attachment-badge" title="${escapeHtml(path)}">
-                📎 <strong>[${escapeHtml(attType)}]</strong> ${escapeHtml(basename)}
-              </div>
-            `;
-          });
-          attachmentsHTML += `</div>`;
-        }
-
         div.innerHTML = `
           <div class="timeline-dot"></div>
           <div class="user-bubble">
             <div class="bubble-header">
-              <div class="header-left">
-                <span class="turn-no-badge">#${turnNo}</span>
-                <span class="sender">${t('sender_user')}</span>
-              </div>
+              <div class="header-left"><span class="turn-no-badge">#${currentTurnNo}</span><span class="sender">${t('sender_user')}</span></div>
               <span class="time">${timeStr}</span>
             </div>
             <div class="prompt-content-wrapper">
               <div class="prompt-text collapsed">${escapeHtml(prompt)}</div>
-              <button class="prompt-toggle-btn">
-                <span class="btn-text">${t('expand_reply')}</span> <span class="arrow">▼</span>
-              </button>
+              <button class="prompt-toggle-btn"><span class="btn-text">${t('expand_reply')}</span> <span class="arrow">▼</span></button>
             </div>
-            ${attachmentsHTML}
-          </div>
-        `;
-
-        // 綁定提問摺疊按鈕事件
+          </div>`;
         const promptText = div.querySelector('.prompt-text');
         const promptToggleBtn = div.querySelector('.prompt-toggle-btn');
         if (promptText && promptToggleBtn) {
           promptToggleBtn.addEventListener('click', () => {
-            const isCollapsed = promptText.classList.contains('collapsed');
-            if (isCollapsed) {
-              promptText.classList.remove('collapsed');
-              promptText.classList.add('expanded');
-              promptToggleBtn.classList.add('expanded');
-              promptToggleBtn.querySelector('.btn-text').textContent = t('collapse_reply');
-              promptToggleBtn.querySelector('.arrow').textContent = '▲';
-            } else {
-              promptText.classList.remove('expanded');
-              promptText.classList.add('collapsed');
-              promptToggleBtn.classList.remove('expanded');
-              promptToggleBtn.querySelector('.btn-text').textContent = t('expand_reply');
-              promptToggleBtn.querySelector('.arrow').textContent = '▼';
-            }
+            const collapsed = promptText.classList.contains('collapsed');
+            promptText.classList.toggle('collapsed', !collapsed);
+            promptText.classList.toggle('expanded', collapsed);
+            promptToggleBtn.classList.toggle('expanded', collapsed);
+            promptToggleBtn.querySelector('.btn-text').textContent = collapsed ? t('collapse_reply') : t('expand_reply');
+            promptToggleBtn.querySelector('.arrow').textContent = collapsed ? '▲' : '▼';
           });
         }
-
         break;
       }
 
       case 'AssistantReply': {
         const replyMarkdown = item.event_data.reply;
         const model = item.event_data.model;
-        const outTokens = item.event_data.output_tokens;
-        const inTokens = item.event_data.input_tokens;
-        const cacheReadTokens = item.event_data.cache_read_tokens;
-        const cacheWriteTokens = item.event_data.cache_write_tokens;
-        const reasoningTokens = item.event_data.reasoning_tokens;
-        const totalTokens = item.event_data.total_tokens || ((inTokens || outTokens) ? ((inTokens || 0) + (outTokens || 0)) : null);
-        const turnNo = item.event_data.turn_no || currentTurnNo;
+        const usage = item.event_data.usage || {};
+        const outTokens = usage.output_tokens;
+        const inTokens = usage.input_tokens;
+        const cacheReadTokens = usage.cache_read_input_tokens;
+        const cacheCreationTokens = usage.cache_creation_input_tokens;
+        const totalTokens = (inTokens || outTokens) ? ((inTokens || 0) + (outTokens || 0)) : null;
+        const toolCalls = item.event_data.tool_calls || [];
 
-        // 如果 content 為空但有 Tool 呼叫，代表助理正在使用工具
-        let replyHtml = '';
-        const toolRequests = item.event_data.tool_requests || [];
-        const hasTools = toolRequests.length > 0;
+        let replyHtml = (!replyMarkdown && toolCalls.length > 0)
+          ? `<span style="font-style: italic; color: var(--text-muted);">${t('thinking_tools')}</span>`
+          : marked.parse(replyMarkdown || '');
 
-        if (!replyMarkdown && hasTools) {
-          replyHtml = `<span style="font-style: italic; color: var(--text-muted);">${t('thinking_tools')}</span>`;
-        } else {
-          replyHtml = marked.parse(replyMarkdown || '');
-        }
-
-        // 建立詳細 Token 資訊區塊 (in, out, reasoning, cache, total)
         let tokenBadge = '';
-        if (totalTokens || inTokens || outTokens || cacheReadTokens || reasoningTokens) {
-          tokenBadge = `
-            <div class="turn-token-stats">
-              ${inTokens ? `<span class="token-badge input" title="輸入 Token (Input Tokens)">In: ${formatToken(inTokens)}</span>` : ''}
-              ${outTokens ? `<span class="token-badge output" title="輸出 Token (Output Tokens)">Out: ${formatToken(outTokens)}</span>` : ''}
-              ${reasoningTokens ? `<span class="token-badge reasoning" title="推理 Token (Reasoning Tokens)">Reasoning: ${formatToken(reasoningTokens)}</span>` : ''}
-              ${cacheReadTokens ? `<span class="token-badge cache" title="快取讀取 Token (Cache Read Tokens)">Cache: ${formatToken(cacheReadTokens)}</span>` : ''}
-              ${totalTokens ? `<span class="token-badge total" title="總 Token (Total Tokens)">Total: ${formatToken(totalTokens)}</span>` : ''}
-            </div>
-          `;
+        if (totalTokens || inTokens || outTokens || cacheReadTokens || cacheCreationTokens) {
+          tokenBadge = `<div class="turn-token-stats">
+            ${inTokens ? `<span class="token-badge input" title="Input">In: ${formatToken(inTokens)}</span>` : ''}
+            ${outTokens ? `<span class="token-badge output" title="Output">Out: ${formatToken(outTokens)}</span>` : ''}
+            ${cacheCreationTokens ? `<span class="token-badge reasoning" title="Cache Creation">Cache+: ${formatToken(cacheCreationTokens)}</span>` : ''}
+            ${cacheReadTokens ? `<span class="token-badge cache" title="Cache Read">Cache: ${formatToken(cacheReadTokens)}</span>` : ''}
+            ${totalTokens ? `<span class="token-badge total" title="Total">Total: ${formatToken(totalTokens)}</span>` : ''}
+          </div>`;
         }
 
-        let copyButtonHtml = '';
-        if (replyMarkdown) {
-          copyButtonHtml = `
-            <button class="copy-markdown-btn" title="${t('copy_markdown_title')}">
-              📋 <span class="btn-text">${t('copy_markdown')}</span>
-            </button>
-          `;
+        let toolCallsHtml = '';
+        if (toolCalls.length > 0) {
+          toolCallsHtml = '<div class="tool-calls-list">';
+          toolCalls.forEach(tc => {
+            const inputStr = tc.input ? JSON.stringify(tc.input, null, 2) : '{}';
+            const truncInput = inputStr.length > 1000 ? inputStr.substring(0, 1000) + '\n' + t('data_truncated') : inputStr;
+            toolCallsHtml += `<div class="tool-call-item"><div class="tool-header" style="cursor:pointer;">🔧 <span class="tool-name">${escapeHtml(tc.name)}</span><span class="toggle-icon">▶</span></div><div class="tool-details" style="display:none;"><div class="detail-section"><pre><code>${escapeHtml(truncInput)}</code></pre></div></div></div>`;
+          });
+          toolCallsHtml += '</div>';
         }
+
+        const copyButtonHtml = replyMarkdown ? `<button class="copy-markdown-btn" title="${t('copy_markdown_title')}">📋 <span class="btn-text">${t('copy_markdown')}</span></button>` : '';
 
         div.innerHTML = `
           <div class="timeline-dot"></div>
           <div class="assistant-bubble">
             <div class="bubble-header">
-              <div class="header-left">
-                <span class="turn-no-badge">#${turnNo}</span>
-                <span class="sender">${t('sender_agent')} (${escapeHtml(model)})</span>
-              </div>
-              <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-                ${copyButtonHtml}
-                <span class="time">${timeStr}</span>
-              </div>
+              <div class="header-left"><span class="turn-no-badge">#${currentTurnNo}</span><span class="sender">${t('sender_agent')} (${escapeHtml(model || '')})</span></div>
+              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">${copyButtonHtml}<span class="time">${timeStr}</span></div>
             </div>
             ${tokenBadge}
             <div class="reply-content-wrapper">
               <div class="reply-content collapsed">${replyHtml}</div>
-              <button class="reply-toggle-btn">
-                <span class="btn-text">${t('expand_reply')}</span> <span class="arrow">▼</span>
-              </button>
+              <button class="reply-toggle-btn"><span class="btn-text">${t('expand_reply')}</span> <span class="arrow">▼</span></button>
             </div>
-          </div>
-        `;
+            ${toolCallsHtml}
+          </div>`;
 
-        // 綁定摺疊按鈕事件
+        div.querySelectorAll('.tool-call-item .tool-header').forEach(header => {
+          header.addEventListener('click', () => {
+            const details = header.closest('.tool-call-item').querySelector('.tool-details');
+            const icon = header.querySelector('.toggle-icon');
+            const hidden = details.style.display === 'none';
+            details.style.display = hidden ? 'block' : 'none';
+            if (icon) icon.textContent = hidden ? '▼' : '▶';
+          });
+        });
+
         const replyContent = div.querySelector('.reply-content');
         const toggleBtn = div.querySelector('.reply-toggle-btn');
         if (replyContent && toggleBtn) {
           toggleBtn.addEventListener('click', () => {
-            const isCollapsed = replyContent.classList.contains('collapsed');
-            if (isCollapsed) {
-              replyContent.classList.remove('collapsed');
-              replyContent.classList.add('expanded');
-              toggleBtn.classList.add('expanded');
-              toggleBtn.querySelector('.btn-text').textContent = t('collapse_reply');
-              toggleBtn.querySelector('.arrow').textContent = '▲';
-            } else {
-              replyContent.classList.remove('expanded');
-              replyContent.classList.add('collapsed');
-              toggleBtn.classList.remove('expanded');
-              toggleBtn.querySelector('.btn-text').textContent = t('expand_reply');
-              toggleBtn.querySelector('.arrow').textContent = '▼';
-            }
+            const collapsed = replyContent.classList.contains('collapsed');
+            replyContent.classList.toggle('collapsed', !collapsed);
+            replyContent.classList.toggle('expanded', collapsed);
+            toggleBtn.classList.toggle('expanded', collapsed);
+            toggleBtn.querySelector('.btn-text').textContent = collapsed ? t('collapse_reply') : t('expand_reply');
+            toggleBtn.querySelector('.arrow').textContent = collapsed ? '▲' : '▼';
           });
         }
 
-        // 如果此助理訊息沒有調用任何 Tool，且此會話沒有使用者提問事件，則將回合序號遞增 1
-        if (!hasTools && !hasUserPrompts) {
-          currentTurnNo++;
-        }
-
-        // 綁定複製 Markdown 事件
         if (replyMarkdown) {
           const copyBtn = div.querySelector('.copy-markdown-btn');
           if (copyBtn) {
             copyBtn.addEventListener('click', () => {
               navigator.clipboard.writeText(replyMarkdown).then(() => {
                 const btnTextEl = copyBtn.querySelector('.btn-text');
-                const originalText = btnTextEl ? btnTextEl.textContent : 'Copy Markdown';
+                const orig = btnTextEl ? btnTextEl.textContent : '';
                 if (btnTextEl) btnTextEl.textContent = t('copy_success');
                 copyBtn.classList.add('copied');
-                
-                setTimeout(() => {
-                  if (btnTextEl) btnTextEl.textContent = originalText;
-                  copyBtn.classList.remove('copied');
-                }, 2000);
-              }).catch((err) => {
-                console.error('Failed to copy text: ', err);
-                showNotification(t('copy_failed'), 'error');
-              });
+                setTimeout(() => { if (btnTextEl) btnTextEl.textContent = orig; copyBtn.classList.remove('copied'); }, 2000);
+              }).catch(() => showNotification(t('copy_failed'), 'error'));
             });
           }
         }
-
         break;
       }
 
-      case 'ToolStep': {
+      case 'ToolResult': {
         const toolName = item.event_data.tool_name;
-        const args = item.event_data.arguments;
         const result = item.event_data.result;
-
-        const isSuccess = result !== null && result !== undefined;
-        const badgeClass = isSuccess ? 'badge success' : 'badge executing';
-        const badgeText = isSuccess ? 'Success' : 'Executing';
-
-        // 格式化 Args & Result 為 Pre 區塊
-        const argsStr = args ? JSON.stringify(args, null, 2) : '{}';
-        
+        const isError = item.event_data.is_error || false;
         let resultStr = t('no_returned_data');
         if (result) {
-          if (result.textResultForLlm) {
-            resultStr = result.textResultForLlm;
-          } else if (result.content) {
-            resultStr = result.content;
-          } else {
-            resultStr = JSON.stringify(result, null, 2);
-          }
+          if (result.toolUseResult) {
+            const tr = result.toolUseResult;
+            resultStr = tr.stdout || (tr.stderr ? `[stderr] ${tr.stderr}` : JSON.stringify(tr, null, 2));
+          } else if (result.content) resultStr = result.content;
+          else resultStr = JSON.stringify(result, null, 2);
         }
-
-        // 限制顯示長度，防止大日誌撐爆介面
-        const truncatedResultStr = resultStr.length > 1500 ? resultStr.substring(0, 1500) + '\n' + t('data_truncated') : resultStr;
-
+        const truncResult = resultStr.length > 1500 ? resultStr.substring(0, 1500) + '\n' + t('data_truncated') : resultStr;
         div.innerHTML = `
           <div class="timeline-dot"></div>
           <div class="tool-step-bubble">
             <div class="tool-header">
-              <div class="tool-info">
-                🔧 <span class="tool-name">${escapeHtml(toolName)}</span>
-                <span class="${badgeClass}">${badgeText}</span>
-              </div>
+              <div class="tool-info">🔧 <span class="tool-name">${escapeHtml(toolName || '')}</span><span class="${isError ? 'badge error' : 'badge success'}">${isError ? 'Error' : 'Success'}</span></div>
               <span class="toggle-icon">▶</span>
             </div>
             <div class="tool-details">
-              <div class="detail-section">
-                <span>${t('tool_arguments')}</span>
-                <pre><code>${escapeHtml(argsStr)}</code></pre>
-              </div>
-              <div class="detail-section">
-                <span>${t('tool_result')}</span>
-                <pre><code>${escapeHtml(truncatedResultStr)}</code></pre>
-              </div>
+              <div class="detail-section"><span>${t('tool_result')}</span><pre><code>${escapeHtml(truncResult)}</code></pre></div>
             </div>
-          </div>
-        `;
-
-        // 綁定點擊展開事件
+          </div>`;
         const header = div.querySelector('.tool-header');
         header.addEventListener('click', () => {
           const bubble = header.closest('.tool-step-bubble');
           bubble.classList.toggle('expanded');
-          const icon = header.querySelector('.toggle-icon');
-          icon.textContent = bubble.classList.contains('expanded') ? '▼' : '▶';
+          header.querySelector('.toggle-icon').textContent = bubble.classList.contains('expanded') ? '▼' : '▶';
         });
-
         break;
       }
 
       case 'SystemStatus': {
         let message = item.event_data.message;
-        if (message === '會話開始 (Session Started)') {
-          message = t('session_started');
-        } else if (message === '會話結束 (Session Ended)') {
-          message = t('session_ended');
-        } else if (message === '會話狀態壓縮完成 (Session Compaction Completed)') {
-          message = t('session_compaction');
-        }
-
-        let emoji = '⚙️';
-        if (item.event_data.status_type === 'session_compaction') {
-          emoji = '🗜️';
-        }
-
-        div.innerHTML = `
-          <div class="timeline-dot"></div>
-          <div class="system-bubble">
-            <div class="system-badge">
-              ${emoji} ${escapeHtml(message)} <span class="time">${timeStr}</span>
-            </div>
-          </div>
-        `;
+        if (message === '會話開始 (Session Started)') message = t('session_started');
+        else if (message === '會話結束 (Session Ended)') message = t('session_ended');
+        else if (message === '會話狀態壓縮完成 (Session Compaction Completed)') message = t('session_compaction');
+        const emoji = item.event_data.status_type === 'session_compaction' ? '🗜️' : '⚙️';
+        div.innerHTML = `<div class="timeline-dot"></div><div class="system-bubble"><div class="system-badge">${emoji} ${escapeHtml(message)} <span class="time">${timeStr}</span></div></div>`;
         break;
       }
     }
-
     timelineContainer.appendChild(div);
   });
 }
 
 // =========================================================================
-// Helpers / Utilities
+// Helpers
 // =========================================================================
 function formatNumber(num) {
   if (num === null || num === undefined) return '-';
@@ -1626,14 +1072,8 @@ function formatToken(num) {
   if (num === null || num === undefined) return '-';
   const n = Number(num);
   if (isNaN(n)) return '-';
-  if (n >= 1000000) {
-    const val = n / 1000000;
-    return (val % 1 === 0 ? val : val.toFixed(1)) + 'm';
-  }
-  if (n >= 1000) {
-    const val = n / 1000;
-    return (val % 1 === 0 ? val : val.toFixed(1)) + 'k';
-  }
+  if (n >= 1000000) { const v = n / 1000000; return (v % 1 === 0 ? v : v.toFixed(1)) + 'm'; }
+  if (n >= 1000) { const v = n / 1000; return (v % 1 === 0 ? v : v.toFixed(1)) + 'k'; }
   return n.toString();
 }
 
@@ -1642,27 +1082,17 @@ function calculatePercentage(part, total) {
   return `${Math.round((part / total) * 100)}%`;
 }
 
-function formatDuration(ms) {
-  if (ms === null || ms === undefined || ms === 0) return '-';
-  if (ms < 1000) return `${ms}ms`;
-  
-  const totalSecs = ms / 1000;
-  if (totalSecs < 60) {
-    return `${totalSecs.toFixed(1)}s`;
-  }
-  
-  const totalSecsInt = Math.floor(totalSecs);
+function formatDurationMinutes(minutes) {
+  if (minutes === null || minutes === undefined || minutes === 0) return '-';
+  const m = Number(minutes);
+  if (isNaN(m) || m <= 0) return '-';
+  if (m < 1) return `${Math.round(m * 60)}s`;
+  const totalSecsInt = Math.floor(m * 60);
   const hours = Math.floor(totalSecsInt / 3600);
-  const minutes = Math.floor((totalSecsInt % 3600) / 60);
-  const seconds = totalSecsInt % 60;
-  
-  const pad = (num) => String(num).padStart(2, '0');
-  
-  if (hours > 0) {
-    return `${hours}:${pad(minutes)}:${pad(seconds)}`;
-  } else {
-    return `${minutes}:${pad(seconds)}`;
-  }
+  const mins = Math.floor((totalSecsInt % 3600) / 60);
+  const secs = totalSecsInt % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return hours > 0 ? `${hours}:${pad(mins)}:${pad(secs)}` : `${mins}:${pad(secs)}`;
 }
 
 function formatLocalTime(isoString, includeSeconds = true) {
@@ -1670,159 +1100,88 @@ function formatLocalTime(isoString, includeSeconds = true) {
   try {
     const date = new Date(isoString);
     if (isNaN(date.getTime())) return '';
-    const pad = (num) => String(num).padStart(2, '0');
-    const hours = pad(date.getHours());
-    const minutes = pad(date.getMinutes());
-    if (includeSeconds) {
-      const seconds = pad(date.getSeconds());
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    return `${hours}:${minutes}`;
-  } catch (err) {
-    return '';
-  }
+    const pad = (n) => String(n).padStart(2, '0');
+    const h = pad(date.getHours()), m = pad(date.getMinutes());
+    return includeSeconds ? `${h}:${m}:${pad(date.getSeconds())}` : `${h}:${m}`;
+  } catch (err) { return ''; }
 }
 
 function escapeHtml(unsafe) {
   if (!unsafe) return '';
-  return unsafe
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
 // =========================================================================
-// API 呼叫: 載入月份清單
+// Monthly Data
 // =========================================================================
 async function fetchMonths(selectedMonth = null) {
   try {
     const res = await fetch('/api/months');
     const data = await res.json();
-    
     const monthSelect = document.getElementById('month-select');
     monthSelect.innerHTML = '';
-
     if (!data.months || data.months.length === 0) {
       monthSelect.innerHTML = `<option value="" disabled selected>${t('no_month_logs')}</option>`;
       return;
     }
-
     let monthToLoad = data.months[0];
     let hasSelected = false;
-
     data.months.forEach((month) => {
       const opt = document.createElement('option');
-      opt.value = month;
-      opt.textContent = month;
-      if (selectedMonth && month === selectedMonth) {
-        opt.selected = true;
-        monthToLoad = month;
-        hasSelected = true;
-      }
+      opt.value = month; opt.textContent = month;
+      if (selectedMonth && month === selectedMonth) { opt.selected = true; monthToLoad = month; hasSelected = true; }
       monthSelect.appendChild(opt);
     });
-
-    if (!hasSelected) {
-      if (monthSelect.options.length > 0) {
-        monthSelect.options[0].selected = true;
-      }
-    }
-
-    if (activeTab === 'monthly') {
-      await loadMonthlyData(monthToLoad);
-    }
-
-  } catch (err) {
-    console.error('獲取月份清單失敗:', err);
-    showNotification(t('load_failed'), 'error');
-  }
+    if (!hasSelected && monthSelect.options.length > 0) monthSelect.options[0].selected = true;
+    if (activeTab === 'monthly') await loadMonthlyData(monthToLoad);
+  } catch (err) { showNotification(t('load_failed'), 'error'); }
 }
 
 async function reloadMonthlyData() {
-  const monthSelect = document.getElementById('month-select');
-  const selectedMonth = monthSelect.value;
-  await fetchMonths(selectedMonth);
+  await fetchMonths(document.getElementById('month-select').value);
 }
 
-// =========================================================================
-// API 呼叫: 載入單月彙整數據
-// =========================================================================
 async function loadMonthlyData(month) {
   try {
     document.getElementById('current-date-title').innerHTML = `<span class="title-icon">⌛</span> <span class="title-text">${t('loading_month_prefix')}${month}...</span>`;
-
     const res = await fetch(`/api/monthly/${month}`);
-    if (res.status === 404) {
-      showNotification(t('month_not_found'), 'error');
-      return;
-    }
-    
-    const data = await res.json();
-    renderMonthlyDashboard(data);
-
-  } catch (err) {
-    console.error('載入月份彙整失敗:', err);
-    showNotification(t('monthly_load_failed'), 'error');
-  }
+    if (res.status === 404) { showNotification(t('month_not_found'), 'error'); return; }
+    renderMonthlyDashboard(await res.json());
+  } catch (err) { showNotification(t('monthly_load_failed'), 'error'); }
 }
 
-// =========================================================================
-// 渲染月報看板數據
-// =========================================================================
 function renderMonthlyDashboard(data) {
   currentMonthlyData = data;
   const { year_month, summary, daily_breakdown, top_models, top_projects } = data;
 
-  // 1. 更新標題與版本
   document.getElementById('current-date-title').innerHTML = `<span class="title-icon">📅</span> <span class="title-text">${t('monthly_report')}${year_month}</span>`;
-  document.getElementById('copilot-version-badge').textContent = `Monthly Summary`;
+  document.getElementById('copilot-version-badge').textContent = 'Monthly Summary';
 
-  // 2. 更新指標卡片
   document.getElementById('monthly-stat-total-tokens').textContent = formatToken(summary.total_tokens);
   document.getElementById('monthly-stat-cache-read').textContent = `${t('cache_read_label')}: ${formatToken(summary.total_cache_read_tokens)} (${calculatePercentage(summary.total_cache_read_tokens, summary.total_tokens)})`;
-
   document.getElementById('monthly-stat-input-tokens').textContent = formatToken(summary.total_input_tokens);
   document.getElementById('monthly-stat-input-pct').textContent = `${t('ratio_label')}: ${calculatePercentage(summary.total_input_tokens, summary.total_tokens)}`;
-
   document.getElementById('monthly-stat-output-tokens').textContent = formatToken(summary.total_output_tokens);
   document.getElementById('monthly-stat-output-pct').textContent = `${t('ratio_label')}: ${calculatePercentage(summary.total_output_tokens, summary.total_tokens)}`;
-
   document.getElementById('monthly-stat-sessions').textContent = summary.total_sessions;
-  document.getElementById('monthly-stat-requests').textContent = t('monthly_requests_count').replace('{count}', formatNumber(summary.total_requests));
-
+  document.getElementById('monthly-stat-duration').textContent = t('monthly_duration').replace('{val}', formatDurationMinutes(summary.total_duration_minutes || 0));
   document.getElementById('monthly-stat-total-cost').textContent = formatCost(summary.total_cost_usd || 0);
 
-  // 3. 繪製單月每日趨勢圖
   renderMonthlyChart(daily_breakdown);
-
-  // 4. 渲染最常活動專案列表
   renderMonthlyProjectsTable(top_projects);
-
-  // 5. 渲染模型佔比列表
   renderMonthlyModelsTable(top_models);
-
-  // 6. 渲染當月每日彙總列表
-  monthlyDailySortColumn = 'date';
-  monthlyDailySortDirection = 'desc';
+  monthlyDailySortColumn = 'date'; monthlyDailySortDirection = 'desc';
   sortAndRenderMonthlyDailyTable();
 }
 
-// =========================================================================
-// 渲染單月每日 Token 與 Session 趨勢圖
-// =========================================================================
 function renderMonthlyChart(dailyBreakdown) {
   currentMonthlyBreakdown = dailyBreakdown;
   const canvas = document.getElementById('monthlyTokenChart');
+  const labels = dailyBreakdown.map(e => e.date.substring(5));
+  const tokenData = dailyBreakdown.map(e => e.total_tokens);
+  const cacheData = dailyBreakdown.map(e => e.total_cache_read_tokens || 0);
+  const sessionData = dailyBreakdown.map(e => e.total_sessions);
 
-  // 提取標籤與數據
-  const labels = dailyBreakdown.map(entry => entry.date.substring(5)); // 只顯示 MM-DD
-  const tokenData = dailyBreakdown.map(entry => entry.total_tokens);
-  const cacheData = dailyBreakdown.map(entry => entry.total_cache_read_tokens || 0);
-  const sessionData = dailyBreakdown.map(entry => entry.total_sessions);
-
-  // 若圖表已存在，則動態更新數據以達到平滑變動效果
   if (monthlyChartInstance) {
     monthlyChartInstance.data.labels = labels;
     monthlyChartInstance.data.datasets[0].label = t('chart_monthly_token_label');
@@ -1831,394 +1190,166 @@ function renderMonthlyChart(dailyBreakdown) {
     monthlyChartInstance.data.datasets[0].data = tokenData;
     monthlyChartInstance.data.datasets[1].data = cacheData;
     monthlyChartInstance.data.datasets[2].data = sessionData;
-    if (monthlyChartInstance.options.scales && monthlyChartInstance.options.scales.y && monthlyChartInstance.options.scales.y.title) {
-      monthlyChartInstance.options.scales.y.title.text = t('col_total');
-    }
-    if (monthlyChartInstance.options.scales && monthlyChartInstance.options.scales.y1 && monthlyChartInstance.options.scales.y1.title) {
-      monthlyChartInstance.options.scales.y1.title.text = t('col_sessions_count');
-    }
-    monthlyChartInstance.update();
-    return;
+    if (monthlyChartInstance.options.scales.y.title) monthlyChartInstance.options.scales.y.title.text = t('col_total');
+    if (monthlyChartInstance.options.scales.y1.title) monthlyChartInstance.options.scales.y1.title.text = t('col_sessions_count');
+    monthlyChartInstance.update(); return;
   }
 
   monthlyChartInstance = new Chart(canvas, {
-    type: 'bar',
-    data: {
-      labels: labels,
+    type: 'bar', data: { labels,
       datasets: [
-        {
-          label: t('chart_monthly_token_label'),
-          data: tokenData,
-          backgroundColor: 'rgba(0, 242, 254, 0.22)',
-          borderColor: '#00f2fe',
-          borderWidth: 1.5,
-          borderRadius: 6,
-          yAxisID: 'y',
-          grouped: false,
-          barPercentage: 0.8,
-        },
-        {
-          label: t('chart_cache_label'),
-          data: cacheData,
-          backgroundColor: 'rgba(129, 140, 248, 0.75)',
-          borderColor: '#818cf8',
-          borderWidth: 1.5,
-          borderRadius: 6,
-          yAxisID: 'y',
-          grouped: false,
-          barPercentage: 0.8,
-        },
-        {
-          label: t('chart_monthly_session_label'),
-          data: sessionData,
-          type: 'line',
-          borderColor: '#ff4b5c',
-          backgroundColor: 'rgba(255, 75, 92, 0.2)',
-          borderWidth: 2,
-          pointBackgroundColor: '#ff4b5c',
-          pointRadius: 4,
-          tension: 0.2,
-          yAxisID: 'y1',
-        }
+        { label: t('chart_monthly_token_label'), data: tokenData, backgroundColor: 'rgba(0, 242, 254, 0.22)', borderColor: '#00f2fe', borderWidth: 1.5, borderRadius: 6, yAxisID: 'y', grouped: false, barPercentage: 0.8 },
+        { label: t('chart_cache_label'), data: cacheData, backgroundColor: 'rgba(129, 140, 248, 0.75)', borderColor: '#818cf8', borderWidth: 1.5, borderRadius: 6, yAxisID: 'y', grouped: false, barPercentage: 0.8 },
+        { label: t('chart_monthly_session_label'), data: sessionData, type: 'line', borderColor: '#ff4b5c', backgroundColor: 'rgba(255, 75, 92, 0.2)', borderWidth: 2, pointBackgroundColor: '#ff4b5c', pointRadius: 4, tension: 0.2, yAxisID: 'y1' }
       ]
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
+      responsive: true, maintainAspectRatio: false,
       onClick: (event, elements) => {
         if (elements && elements.length > 0) {
-          const index = elements[0].index;
-          const selectedEntry = currentMonthlyBreakdown[index];
-          if (selectedEntry && selectedEntry.date) {
-            switchToDailyDate(selectedEntry.date);
-          }
+          const entry = currentMonthlyBreakdown[elements[0].index];
+          if (entry && entry.date) switchToDailyDate(entry.date);
         }
       },
-      onHover: (event, activeElements) => {
-        canvas.style.cursor = activeElements.length ? 'pointer' : 'default';
-      },
+      onHover: (event, activeElements) => { canvas.style.cursor = activeElements.length ? 'pointer' : 'default'; },
       plugins: {
-        legend: {
-          labels: {
-            color: '#f3f4f6',
-            font: {
-              family: 'Outfit'
-            }
-          }
-        },
-        tooltip: {
-          padding: 12,
-          backgroundColor: 'rgba(15, 18, 29, 0.95)',
-          titleColor: '#00f2fe',
-          bodyColor: '#f3f4f6',
-          borderColor: 'rgba(255, 255, 255, 0.1)',
-          borderWidth: 1,
-          callbacks: {
-            label: (context) => {
-              const label = context.dataset.label || '';
-              const value = context.parsed.y;
-              if (label.includes('Token')) {
-                return `${label}: ${formatToken(value)} (${formatNumber(value)})`;
-              }
-              return `${label}: ${formatNumber(value)}`;
-            }
-          }
+        legend: { labels: { color: '#f3f4f6', font: { family: 'Outfit' } } },
+        tooltip: { padding: 12, backgroundColor: 'rgba(15, 18, 29, 0.95)', titleColor: '#00f2fe', bodyColor: '#f3f4f6', borderColor: 'rgba(255, 255, 255, 0.1)', borderWidth: 1,
+          callbacks: { label: (context) => { const label = context.dataset.label || ''; const value = context.parsed.y; return label.includes('Token') ? `${label}: ${formatToken(value)} (${formatNumber(value)})` : `${label}: ${formatNumber(value)}`; } }
         }
       },
       scales: {
-        x: {
-          stacked: false,
-          grid: {
-            color: 'rgba(255, 255, 255, 0.05)'
-          },
-          ticks: {
-            color: '#9ca3af',
-            font: {
-              size: 10
-            }
-          }
-        },
-        y: {
-          stacked: false,
-          type: 'linear',
-          position: 'left',
-          grid: {
-            color: 'rgba(255, 255, 255, 0.05)'
-          },
-          ticks: {
-            color: '#9ca3af',
-            callback: (value) => formatToken(value)
-          },
-          title: {
-            display: true,
-            text: t('col_total'),
-            color: '#f3f4f6'
-          }
-        },
-        y1: {
-          stacked: false,
-          type: 'linear',
-          position: 'right',
-          grid: {
-            drawOnChartArea: false,
-          },
-          ticks: {
-            color: '#9ca3af',
-            stepSize: 1
-          },
-          title: {
-            display: true,
-            text: t('col_sessions_count')
-          }
-        }
+        x: { stacked: false, grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#9ca3af', font: { size: 10 } } },
+        y: { stacked: false, type: 'linear', position: 'left', grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#9ca3af', callback: (value) => formatToken(value) }, title: { display: true, text: t('col_total'), color: '#f3f4f6' } },
+        y1: { stacked: false, type: 'linear', position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#9ca3af', stepSize: 1 }, title: { display: true, text: t('col_sessions_count') } }
       }
     }
   });
-
-  // 根據當前主題更新圖表樣式
-  const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
-  updateChartsTheme(currentTheme);
+  updateChartsTheme(document.documentElement.getAttribute('data-theme') || 'dark');
 }
 
-// =========================================================================
-// 渲染最常活動專案列表 Table
-// =========================================================================
 function renderMonthlyProjectsTable(projects) {
   const tbody = document.getElementById('monthly-projects-body');
   tbody.innerHTML = '';
-
-  if (projects.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" class="placeholder-text">${t('placeholder_no_projects')}</td></tr>`;
-    return;
-  }
-
-  // 僅取前 15 名
-  const displayProjects = projects.slice(0, 15);
-
-  displayProjects.forEach((p, idx) => {
+  if (projects.length === 0) { tbody.innerHTML = `<tr><td colspan="4" class="placeholder-text">${t('placeholder_no_projects')}</td></tr>`; return; }
+  projects.slice(0, 15).forEach((p, idx) => {
     const tr = document.createElement('tr');
     tr.style.cursor = 'default';
-
     tr.innerHTML = `
-      <td style="text-align: center;"><span class="badge ${idx < 3 ? 'highlight' : ''}">${idx + 1}</span></td>
-      <td class="cwd-cell" title="${escapeHtml(p.project)}" style="max-width: 250px;">${escapeHtml(p.project)}</td>
+      <td style="text-align:center;"><span class="badge ${idx < 3 ? 'highlight' : ''}">${idx + 1}</span></td>
+      <td class="cwd-cell" title="${escapeHtml(p.project)}" style="max-width:250px;">${escapeHtml(p.project)}</td>
       <td><span class="badge">${p.session_count} Sessions</span></td>
-      <td style="font-weight: 700; color: var(--accent-cyan);">
-        ${formatToken(p.total_tokens)}
-        ${p.total_cache_read_tokens ? `<div style="font-size: 0.72rem; font-weight: normal; color: #a5b4fc; margin-top: 3px;" title="${t('chart_cache_label')}">${t('cache_prefix')}${formatToken(p.total_cache_read_tokens)}</div>` : ''}
-      </td>
-    `;
+      <td style="font-weight:700;color:var(--accent-cyan);">${formatToken(p.total_tokens)}${p.total_cache_read_tokens ? `<div style="font-size:0.72rem;font-weight:normal;color:#a5b4fc;margin-top:3px;">${t('cache_prefix')}${formatToken(p.total_cache_read_tokens)}</div>` : ''}</td>`;
     tbody.appendChild(tr);
   });
 }
 
-// =========================================================================
-// 渲染模型佔比列表 Table
-// =========================================================================
 function renderMonthlyModelsTable(models) {
   const tbody = document.getElementById('monthly-models-body');
   tbody.innerHTML = '';
-
-  if (models.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" class="placeholder-text">${t('placeholder_no_models')}</td></tr>`;
-    return;
-  }
-
+  if (models.length === 0) { tbody.innerHTML = `<tr><td colspan="5" class="placeholder-text">${t('placeholder_no_models')}</td></tr>`; return; }
   models.forEach((m, idx) => {
     const tr = document.createElement('tr');
     tr.style.cursor = 'default';
-
     tr.innerHTML = `
-      <td style="text-align: center;"><span class="badge ${idx < 3 ? 'highlight' : ''}">${idx + 1}</span></td>
+      <td style="text-align:center;"><span class="badge ${idx < 3 ? 'highlight' : ''}">${idx + 1}</span></td>
       <td><span class="badge highlight">${escapeHtml(m.model)}</span></td>
       <td><span class="badge">${m.session_count} Sessions</span></td>
-      <td style="font-weight: 700; color: var(--accent-purple);">
-        ${formatToken(m.total_tokens)}
-        ${m.total_cache_read_tokens ? `<div style="font-size: 0.72rem; font-weight: normal; color: #a5b4fc; margin-top: 3px;" title="${t('chart_cache_label')}">${t('cache_prefix')}${formatToken(m.total_cache_read_tokens)}</div>` : ''}
-      </td>
-      <td style="font-weight: 700; color: var(--neon-gold);">${formatCost(m.cost_usd || 0)}</td>
-    `;
+      <td style="font-weight:700;color:var(--accent-purple);">${formatToken(m.total_tokens)}${m.total_cache_read_tokens ? `<div style="font-size:0.72rem;font-weight:normal;color:#a5b4fc;margin-top:3px;">${t('cache_prefix')}${formatToken(m.total_cache_read_tokens)}</div>` : ''}</td>
+      <td style="font-weight:700;color:var(--neon-gold);">${formatCost(m.cost_usd || 0)}</td>`;
     tbody.appendChild(tr);
   });
 }
 
-// =========================================================================
-// 渲染當月每日彙總 Table
-// =========================================================================
 function renderMonthlyDailySummaryTable(dailyBreakdown) {
   const tbody = document.getElementById('monthly-daily-summary-body');
   tbody.innerHTML = '';
-
-  if (!dailyBreakdown || dailyBreakdown.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" class="placeholder-text">${t('placeholder_no_daily_summary')}</td></tr>`;
-    return;
-  }
-
+  if (!dailyBreakdown || dailyBreakdown.length === 0) { tbody.innerHTML = `<tr><td colspan="7" class="placeholder-text">${t('placeholder_no_daily_summary')}</td></tr>`; return; }
   dailyBreakdown.forEach(entry => {
     const tr = document.createElement('tr');
     tr.style.cursor = 'pointer';
-    
-    // 點選整列可跳轉並帶入該日期查詢
-    tr.addEventListener('click', () => {
-      switchToDailyDate(entry.date);
-    });
-
+    tr.addEventListener('click', () => switchToDailyDate(entry.date));
     tr.innerHTML = `
-      <td style="font-weight: 600; color: var(--accent-cyan);">${escapeHtml(entry.date)}</td>
-      <td style="color: var(--text-secondary);">${formatToken(entry.total_input_tokens || 0)}</td>
-      <td style="color: var(--text-secondary);">${formatToken(entry.total_output_tokens || 0)}</td>
-      <td style="color: #a78bfa;">${formatToken(entry.total_reasoning_tokens || 0)}</td>
-      <td style="color: #34d399;">${formatToken(entry.total_cache_read_tokens || 0)}</td>
-      <td style="font-weight: 700; color: #fbbf24;">${formatToken(entry.total_tokens)}</td>
-      <td style="font-weight: 700; color: var(--neon-gold);">${formatCost(entry.cost_usd || 0)}</td>
-    `;
+      <td style="font-weight:600;color:var(--accent-cyan);">${escapeHtml(entry.date)}</td>
+      <td style="color:var(--text-secondary);">${formatToken(entry.total_input_tokens || 0)}</td>
+      <td style="color:var(--text-secondary);">${formatToken(entry.total_output_tokens || 0)}</td>
+      <td style="color:#a78bfa;">${formatToken(entry.total_cache_creation_tokens || 0)}</td>
+      <td style="color:#34d399;">${formatToken(entry.total_cache_read_tokens || 0)}</td>
+      <td style="font-weight:700;color:#fbbf24;">${formatToken(entry.total_tokens)}</td>
+      <td style="font-weight:700;color:var(--neon-gold);">${formatCost(entry.cost_usd || 0)}</td>`;
     tbody.appendChild(tr);
   });
 }
 
 function sortAndRenderMonthlyDailyTable() {
-  if (!currentMonthlyBreakdown || currentMonthlyBreakdown.length === 0) {
-    renderMonthlyDailySummaryTable([]);
-    return;
-  }
-
+  if (!currentMonthlyBreakdown || currentMonthlyBreakdown.length === 0) { renderMonthlyDailySummaryTable([]); return; }
   currentMonthlyBreakdown.sort((a, b) => {
     let valA, valB;
-    if (monthlyDailySortColumn === 'date') {
-      valA = a.date;
-      valB = b.date;
-    } else {
-      const keyMap = {
-        'input': 'total_input_tokens',
-        'output': 'total_output_tokens',
-        'reasoning': 'total_reasoning_tokens',
-        'cache': 'total_cache_read_tokens',
-        'total': 'total_tokens',
-        'cost': 'cost_usd'
-      };
+    if (monthlyDailySortColumn === 'date') { valA = a.date; valB = b.date; }
+    else {
+      const keyMap = { 'input': 'total_input_tokens', 'output': 'total_output_tokens', 'cache_creation': 'total_cache_creation_tokens', 'cache': 'total_cache_read_tokens', 'total': 'total_tokens', 'cost': 'cost_usd' };
       const field = keyMap[monthlyDailySortColumn] || monthlyDailySortColumn;
-      valA = a[field];
-      valB = b[field];
+      valA = a[field]; valB = b[field];
     }
-
-    // 空值處理
     if (valA === undefined || valA === null) valA = 0;
     if (valB === undefined || valB === null) valB = 0;
-
-    if (typeof valA === 'string' && typeof valB === 'string') {
-      return monthlyDailySortDirection === 'asc' 
-        ? valA.localeCompare(valB) 
-        : valB.localeCompare(valA);
-    }
-
+    if (typeof valA === 'string' && typeof valB === 'string') return monthlyDailySortDirection === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
     return monthlyDailySortDirection === 'asc' ? valA - valB : valB - valA;
   });
-
   renderMonthlyDailySummaryTable(currentMonthlyBreakdown);
   updateMonthlySortHeadersUI();
 }
 
 function updateMonthlySortHeadersUI() {
-  const headers = document.querySelectorAll('.premium-table th.sortable[data-table="monthly"]');
-  headers.forEach(th => {
+  document.querySelectorAll('.premium-table th.sortable[data-table="monthly"]').forEach(th => {
     const column = th.getAttribute('data-sort');
     const icon = th.querySelector('.sort-icon');
     if (!icon) return;
-
     th.classList.remove('sorted-asc', 'sorted-desc');
-    
     if (column === monthlyDailySortColumn) {
-      if (monthlyDailySortDirection === 'asc') {
-        th.classList.add('sorted-asc');
-        icon.innerHTML = '▴';
-      } else {
-        th.classList.add('sorted-desc');
-        icon.innerHTML = '▾';
-      }
-    } else {
-      icon.innerHTML = '<span class="sort-icon-placeholder">▴▾</span>';
-    }
+      th.classList.add(monthlyDailySortDirection === 'asc' ? 'sorted-asc' : 'sorted-desc');
+      icon.innerHTML = monthlyDailySortDirection === 'asc' ? '▴' : '▾';
+    } else { icon.innerHTML = '<span class="sort-icon-placeholder">▴▾</span>'; }
   });
 }
 
 // =========================================================================
-// 顯示精緻浮動通知 (Toast)
+// Toast
 // =========================================================================
 function showNotification(message, type = 'info') {
-  console.log(`[${type.toUpperCase()}] ${message}`);
-  
   let container = document.getElementById('toast-container');
   if (!container) {
     container = document.createElement('div');
     container.id = 'toast-container';
-    container.style.position = 'fixed';
-    container.style.bottom = '24px';
-    container.style.right = '24px';
-    container.style.zIndex = '9999';
-    container.style.display = 'flex';
-    container.style.flexDirection = 'column';
-    container.style.gap = '10px';
+    Object.assign(container.style, { position: 'fixed', bottom: '24px', right: '24px', zIndex: '9999', display: 'flex', flexDirection: 'column', gap: '10px' });
     document.body.appendChild(container);
   }
-
   const toast = document.createElement('div');
   toast.className = 'glass-card';
-  toast.style.padding = '12px 20px';
-  toast.style.borderRadius = '10px';
-  toast.style.boxShadow = 'var(--shadow-lg)';
-  toast.style.border = '1px solid var(--glass-border)';
-  toast.style.animation = 'slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
-  toast.style.display = 'flex';
-  toast.style.alignItems = 'center';
-  toast.style.gap = '10px';
-  toast.style.fontSize = '13px';
-  toast.style.fontWeight = '500';
-
+  Object.assign(toast.style, { padding: '12px 20px', borderRadius: '10px', boxShadow: 'var(--shadow-lg)', border: '1px solid var(--glass-border)', animation: 'slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1)', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px', fontWeight: '500' });
   if (!document.getElementById('toast-animation-styles')) {
     const style = document.createElement('style');
     style.id = 'toast-animation-styles';
-    style.innerHTML = `
-      @keyframes slideIn {
-        from { opacity: 0; transform: translateY(20px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-      @keyframes fadeOut {
-        from { opacity: 1; transform: translateY(0); }
-        to { opacity: 0; transform: translateY(-20px); }
-      }
-    `;
+    style.innerHTML = '@keyframes slideIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}@keyframes fadeOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-20px)}}';
     document.head.appendChild(style);
   }
-
-  let icon = 'ℹ️';
-  let color = 'var(--accent-cyan)';
-  if (type === 'success') {
-    icon = '✅';
-    color = 'var(--neon-green)';
-  } else if (type === 'error') {
-    icon = '❌';
-    color = 'var(--neon-red)';
-  }
-
-  toast.innerHTML = `<span style="font-size: 16px;">${icon}</span> <span style="color: ${color}; font-family: var(--font-display);">${message}</span>`;
+  const icons = { success: '✅', error: '❌', info: 'ℹ️' };
+  const colors = { success: 'var(--neon-green)', error: 'var(--neon-red)', info: 'var(--accent-cyan)' };
+  toast.innerHTML = `<span style="font-size:16px;">${icons[type] || 'ℹ️'}</span> <span style="color:${colors[type] || colors.info};font-family:var(--font-display);">${message}</span>`;
   container.appendChild(toast);
-
   setTimeout(() => {
     toast.style.animation = 'fadeOut 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
-    toast.addEventListener('animationend', () => {
-      toast.remove();
-    });
+    toast.addEventListener('animationend', () => toast.remove());
   }, 3000);
 }
 
 // =========================================================================
-// 主題切換 (Light / Dark Theme Toggle)
+// Theme
 // =========================================================================
 function initThemeToggle() {
   const savedTheme = localStorage.getItem('theme') || 'dark';
   document.documentElement.setAttribute('data-theme', savedTheme);
   updateThemeButton(savedTheme);
-
   const themeBtn = document.getElementById('theme-toggle-btn');
   if (themeBtn) {
     themeBtn.addEventListener('click', () => {
@@ -2227,8 +1358,6 @@ function initThemeToggle() {
       document.documentElement.setAttribute('data-theme', newTheme);
       localStorage.setItem('theme', newTheme);
       updateThemeButton(newTheme);
-      
-      // 動態更新 Chart.js 顏色
       updateChartsTheme(newTheme);
     });
   }
@@ -2246,167 +1375,70 @@ function updateChartsTheme(theme) {
   const isLight = theme === 'light';
   const textColor = isLight ? '#1e293b' : '#f3f4f6';
   const mutedColor = isLight ? '#64748b' : '#9ca3af';
-  const gridColor = isLight ? 'rgba(0, 0, 0, 0.05)' : 'rgba(255, 255, 255, 0.05)';
-  const tooltipBg = isLight ? 'rgba(255, 255, 255, 0.95)' : 'rgba(15, 18, 29, 0.95)';
-  const tooltipBorder = isLight ? 'rgba(0, 0, 0, 0.1)' : 'rgba(255, 255, 255, 0.1)';
-
+  const gridColor = isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)';
+  const tooltipBg = isLight ? 'rgba(255,255,255,0.95)' : 'rgba(15,18,29,0.95)';
+  const tooltipBorder = isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
   [tokenChartInstance, monthlyChartInstance].forEach(chart => {
-    if (chart) {
-      // 更新標籤文字顏色
-      if (chart.options.plugins.legend && chart.options.plugins.legend.labels) {
-        chart.options.plugins.legend.labels.color = textColor;
-      }
-      // 更新 Tooltip 樣式
-      if (chart.options.plugins.tooltip) {
-        chart.options.plugins.tooltip.backgroundColor = tooltipBg;
-        chart.options.plugins.tooltip.titleColor = isLight ? '#0284c7' : '#00f2fe';
-        chart.options.plugins.tooltip.bodyColor = textColor;
-        chart.options.plugins.tooltip.borderColor = tooltipBorder;
-      }
-      // 更新軸線刻度與網格顏色
-      if (chart.options.scales) {
-        Object.keys(chart.options.scales).forEach(scaleKey => {
-          const scale = chart.options.scales[scaleKey];
-          if (scale.grid) {
-            scale.grid.color = gridColor;
-          }
-          if (scale.ticks) {
-            scale.ticks.color = mutedColor;
-          }
-          if (scale.title) {
-            scale.title.color = textColor;
-          }
-        });
-      }
-      chart.update();
+    if (!chart) return;
+    if (chart.options.plugins.legend?.labels) chart.options.plugins.legend.labels.color = textColor;
+    if (chart.options.plugins.tooltip) {
+      chart.options.plugins.tooltip.backgroundColor = tooltipBg;
+      chart.options.plugins.tooltip.titleColor = isLight ? '#0284c7' : '#00f2fe';
+      chart.options.plugins.tooltip.bodyColor = textColor;
+      chart.options.plugins.tooltip.borderColor = tooltipBorder;
     }
+    if (chart.options.scales) {
+      Object.values(chart.options.scales).forEach(scale => {
+        if (scale.grid) scale.grid.color = gridColor;
+        if (scale.ticks) scale.ticks.color = mutedColor;
+        if (scale.title) scale.title.color = textColor;
+      });
+    }
+    chart.update();
   });
 }
 
 // =========================================================================
-// Setup Guide Modal & Clipboard Dynamic Logic
+// Setup Guide
 // =========================================================================
 function initSetupGuide() {
   const setupBtn = document.getElementById('btn-setup-guide');
   const closeBtn = document.getElementById('close-setup-modal-btn');
   const modalOverlay = document.getElementById('setup-guide-modal');
-
-  if (setupBtn && modalOverlay) {
-    setupBtn.addEventListener('click', openSetupModal);
-  }
-
-  if (closeBtn && modalOverlay) {
-    closeBtn.addEventListener('click', closeSetupModal);
-    modalOverlay.addEventListener('click', (e) => {
-      if (e.target === modalOverlay) {
-        closeSetupModal();
-      }
-    });
-  }
-
-  // Bind Escape key to close setup modal
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      closeSetupModal();
-    }
-  });
-
-  // Load absolute script path info and build clipboard configs dynamically
+  if (setupBtn) setupBtn.addEventListener('click', openSetupModal);
+  if (closeBtn) closeBtn.addEventListener('click', closeSetupModal);
+  if (modalOverlay) modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeSetupModal(); });
   loadSetupInfo();
-
-  // Bind clipboard copy buttons
   initClipboardButtons();
 }
 
-function openSetupModal() {
-  const modal = document.getElementById('setup-guide-modal');
-  if (modal) {
-    modal.classList.add('active');
-  }
-}
-
-function closeSetupModal() {
-  const modal = document.getElementById('setup-guide-modal');
-  if (modal) {
-    modal.classList.remove('active');
-  }
-}
+function openSetupModal() { document.getElementById('setup-guide-modal')?.classList.add('active'); }
+function closeSetupModal() { document.getElementById('setup-guide-modal')?.classList.remove('active'); }
 
 async function loadSetupInfo() {
   try {
     const res = await fetch('/api/setup-info');
     const data = await res.json();
-    
-    // Dynamic values based on home_dir
-    const homeDir = data.home_dir || '/home/user';
-    const targetScriptPath = `${homeDir}/.copilot/statusline-token.sh`;
-    
-    const settingsJson = JSON.stringify({
-      "statusLine": {
-        "type": "command",
-        "command": targetScriptPath,
-        "padding": 1
-      }
-    }, null, 2);
-
-    const mergedJson = JSON.stringify({
-      "footer": {
-        "showDirectory": true,
-        "showBranch": true
-      },
-      "statusLine": {
-        "type": "command",
-        "command": targetScriptPath,
-        "padding": 1
-      }
-    }, null, 2);
-
-    // Render to DOM
-    const homeLabel = document.getElementById('lbl-detected-home');
-    const jsonCodeEl = document.getElementById('code-setup-json');
-    const mergeCodeEl = document.getElementById('code-setup-json-merge');
-
-    const copyJsonBtn = document.getElementById('btn-copy-json');
-    const copyMergeBtn = document.getElementById('btn-copy-json-merge');
-
-    if (homeLabel) homeLabel.textContent = homeDir;
-    
-    if (jsonCodeEl) jsonCodeEl.textContent = settingsJson;
-    if (copyJsonBtn) copyJsonBtn.setAttribute('data-clipboard-text', settingsJson);
-    
-    if (mergeCodeEl) mergeCodeEl.textContent = mergedJson;
-    if (copyMergeBtn) copyMergeBtn.setAttribute('data-clipboard-text', mergedJson);
-
-  } catch (err) {
-    console.error('Failed to load dynamic setup paths:', err);
-  }
+    const claudeDir = data.claude_dir || '~/.claude/';
+    const el = document.getElementById('lbl-detected-claude-dir');
+    if (el) el.textContent = claudeDir;
+  } catch (err) { console.error('Failed to load setup info:', err); }
 }
 
 function initClipboardButtons() {
-  const copyButtons = document.querySelectorAll('.copy-code-btn');
-  
-  copyButtons.forEach((btn) => {
+  document.querySelectorAll('.copy-code-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      // Prioritize data-clipboard-text, fallback to next code/pre element's textContent
       let textToCopy = btn.getAttribute('data-clipboard-text');
       if (!textToCopy) {
-        const codeEl = btn.nextElementSibling.querySelector('code') || btn.nextElementSibling;
+        const codeEl = btn.nextElementSibling?.querySelector('code') || btn.nextElementSibling;
         textToCopy = codeEl ? codeEl.textContent : '';
       }
-      
       navigator.clipboard.writeText(textToCopy.trim()).then(() => {
-        const originalText = btn.textContent;
+        const orig = btn.textContent;
         btn.textContent = t('copy_success');
         btn.classList.add('copied');
-        
-        setTimeout(() => {
-          btn.textContent = originalText;
-          btn.classList.remove('copied');
-        }, 2000);
-      }).catch((err) => {
-        console.error('Failed to copy text: ', err);
-        showNotification(t('copy_failed'), 'error');
-      });
+        setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 2000);
+      }).catch(() => showNotification(t('copy_failed'), 'error'));
     });
   });
 }
@@ -2416,27 +1448,11 @@ function toggleEmptyState(showEmpty) {
   const grids = document.querySelectorAll('#daily-view-container > .dashboard-grid');
   const charts = document.querySelectorAll('#daily-view-container > .charts-section');
   const sessions = document.querySelectorAll('#daily-view-container > .sessions-section');
-  
   if (showEmpty) {
     if (emptyContainer) {
       emptyContainer.classList.remove('hidden');
-      emptyContainer.innerHTML = `
-        <div class="welcome-setup-card">
-          <div class="card-icon">🤖</div>
-          <h2>${t('empty_title')}</h2>
-          <p>${t('empty_desc')}</p>
-          <div class="action-buttons">
-            <button class="primary-btn" id="btn-empty-setup-guide">${t('btn_empty_setup')}</button>
-            <button class="secondary-btn" id="btn-empty-refresh">${t('btn_empty_refresh')}</button>
-          </div>
-        </div>
-      `;
-      
-      const emptyGuideBtn = document.getElementById('btn-empty-setup-guide');
-      if (emptyGuideBtn) {
-        emptyGuideBtn.addEventListener('click', openSetupModal);
-      }
-      
+      emptyContainer.innerHTML = `<div class="welcome-setup-card"><div class="card-icon">🤖</div><h2>${t('empty_title')}</h2><p>${t('empty_desc')}</p><div class="action-buttons"><button class="primary-btn" id="btn-empty-setup-guide">${t('btn_empty_setup')}</button><button class="secondary-btn" id="btn-empty-refresh">${t('btn_empty_refresh')}</button></div></div>`;
+      document.getElementById('btn-empty-setup-guide')?.addEventListener('click', openSetupModal);
       const emptyRefreshBtn = document.getElementById('btn-empty-refresh');
       if (emptyRefreshBtn) {
         emptyRefreshBtn.addEventListener('click', async () => {
@@ -2446,116 +1462,68 @@ function toggleEmptyState(showEmpty) {
         });
       }
     }
-    
     grids.forEach(el => el.classList.add('hidden'));
     charts.forEach(el => el.classList.add('hidden'));
     sessions.forEach(el => el.classList.add('hidden'));
   } else {
-    if (emptyContainer) {
-      emptyContainer.classList.add('hidden');
-    }
+    if (emptyContainer) emptyContainer.classList.add('hidden');
     grids.forEach(el => el.classList.remove('hidden'));
     charts.forEach(el => el.classList.remove('hidden'));
     sessions.forEach(el => el.classList.remove('hidden'));
   }
 }
 
-// 點擊月度彙整圖表跳轉到每日即時
 function switchToDailyDate(date) {
   const dateSelect = document.getElementById('date-select');
   if (!dateSelect) return;
-
   dateSelect.value = date;
-
-  // 切換 Tab 到 daily
-  if (activeTab === 'daily') {
-    loadUsageData(date);
-  } else {
-    // switchTab('daily') 內部會自動載入 dateSelect.value
-    switchTab('daily');
-  }
+  if (activeTab === 'daily') loadUsageData(date); else switchTab('daily');
 }
 
 // =========================================================================
-// Pricing Rules & Modal Logic
+// Pricing Modal
 // =========================================================================
 async function fetchPricingRules() {
   try {
     const res = await fetch('/api/pricing');
-    if (res.ok) {
-      pricingRules = await res.json();
-      console.log('Loaded pricing rules:', pricingRules);
-    } else {
-      console.error('Failed to fetch pricing rules');
-    }
-  } catch (err) {
-    console.error('Error fetching pricing rules:', err);
-  }
+    if (res.ok) pricingRules = await res.json();
+  } catch (err) { console.error('Error fetching pricing rules:', err); }
 }
 
 function initPricingModal() {
   const pricingBtn = document.getElementById('btn-pricing-sheet');
   const closeBtn = document.getElementById('close-pricing-modal-btn');
   const modalOverlay = document.getElementById('pricing-modal');
-
-  if (pricingBtn && modalOverlay) {
-    pricingBtn.addEventListener('click', openPricingModal);
-  }
-
-  if (closeBtn && modalOverlay) {
-    closeBtn.addEventListener('click', closePricingModal);
-    modalOverlay.addEventListener('click', (e) => {
-      if (e.target === modalOverlay) {
-        closePricingModal();
-      }
-    });
-  }
-
-  // Bind Escape key to close pricing modal
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      closePricingModal();
-    }
-  });
+  if (pricingBtn) pricingBtn.addEventListener('click', openPricingModal);
+  if (closeBtn) closeBtn.addEventListener('click', closePricingModal);
+  if (modalOverlay) modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closePricingModal(); });
 }
 
 function openPricingModal() {
   const modal = document.getElementById('pricing-modal');
-  if (modal) {
-    modal.classList.add('active');
-    renderPricingModalTable();
-  }
+  if (modal) { modal.classList.add('active'); renderPricingModalTable(); }
 }
 
-function closePricingModal() {
-  const modal = document.getElementById('pricing-modal');
-  if (modal) {
-    modal.classList.remove('active');
-  }
-}
+function closePricingModal() { document.getElementById('pricing-modal')?.classList.remove('active'); }
 
 function renderPricingModalTable() {
   const tbody = document.getElementById('pricing-table-body');
   if (!tbody) return;
   tbody.innerHTML = '';
-
   if (!pricingRules || pricingRules.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="placeholder-text">載入中...</td></tr>';
-    return;
+    tbody.innerHTML = '<tr><td colspan="7" class="placeholder-text">載入中...</td></tr>'; return;
   }
-
   pricingRules.forEach(r => {
     const tr = document.createElement('tr');
     tr.style.cursor = 'default';
     tr.innerHTML = `
-      <td style="font-weight: 600;"><span class="badge highlight">${escapeHtml(r.model_name)}</span></td>
+      <td style="font-weight:600;"><span class="badge highlight">${escapeHtml(r.model_name)}</span></td>
       <td>${escapeHtml(r.deployment_type)}</td>
       <td>${escapeHtml(r.unit)}</td>
-      <td style="color: var(--accent-cyan); font-weight: 600;">$${r.input_price.toFixed(2)}</td>
-      <td style="color: #34d399; font-weight: 600;">$${r.cache_input_price.toFixed(2)}</td>
-      <td style="color: #a78bfa; font-weight: 600;">$${r.output_price.toFixed(2)}</td>
-      <td style="color: var(--text-secondary);">${escapeHtml(r.batch_api_price)}</td>
-    `;
+      <td style="color:var(--accent-cyan);font-weight:600;">$${(r.input_price || 0).toFixed(2)}</td>
+      <td style="color:#34d399;font-weight:600;">$${(r.cache_read_price || r.cache_input_price || 0).toFixed(2)}</td>
+      <td style="color:#a78bfa;font-weight:600;">$${(r.cache_write_price || 0).toFixed(2)}</td>
+      <td style="color:var(--accent-cyan);font-weight:600;">$${(r.output_price || 0).toFixed(2)}</td>`;
     tbody.appendChild(tr);
   });
 }

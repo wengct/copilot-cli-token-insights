@@ -3,38 +3,30 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GitHub Copilot CLI Token Insights Dashboard</title>
-  <!-- Favicon -->
+  <title>Claude Code Token Insights Dashboard</title>
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-  <!-- Google Fonts: Outfit & Inter -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <!-- Prevent flash of theme mode -->
   <script>
     const savedTheme = localStorage.getItem('theme') || 'dark';
     document.documentElement.setAttribute('data-theme', savedTheme);
   </script>
-  <!-- CSS Stylesheet -->
   <link rel="stylesheet" href="/static/styles.css">
-  <!-- Chart.js for beautiful charts -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <!-- Marked.js for rendering markdown response -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
   <div class="app-container">
-    <!-- Sidebar: Date selector & Overview Cards -->
     <aside class="app-sidebar">
       <div class="brand">
         <div class="logo"><img src="/static/favicon.ico" /></div>
         <div class="title-group">
-          <h1>Copilot CLI</h1>
+          <h1>Claude Code</h1>
           <span class="subtitle">Token Insights Dashboard</span>
         </div>
       </div>
 
-      <!-- Navigation Tabs -->
       <div class="sidebar-section">
         <div class="tabs-nav">
           <button class="nav-tab active" id="tab-btn-daily" data-i18n="tab_daily">📊 每日即時</button>
@@ -42,7 +34,6 @@
         </div>
       </div>
 
-      <!-- Section 1: Daily Selector (for daily tab) -->
       <div class="sidebar-section" id="daily-selector-section">
         <h3 data-i18n="select_date">選擇日期</h3>
         <div class="date-selector-wrapper" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
@@ -56,7 +47,6 @@
           </button>
         </div>
         
-        <!-- Live Monitor Toggle -->
         <div class="live-monitor-container">
           <div class="live-status-row">
             <span class="live-label">🔴 <span data-i18n="live_refresh">即時自動刷新</span></span>
@@ -87,7 +77,6 @@
         </div>
       </div>
 
-      <!-- Section 2: Monthly Selector (hidden by default) -->
       <div class="sidebar-section hidden" id="monthly-selector-section">
         <h3 data-i18n="select_month">選擇月份</h3>
         <div class="date-selector-wrapper" style="display: flex; gap: 8px; width: 100%;">
@@ -98,7 +87,6 @@
         </div>
       </div>
 
-      <!-- Quick Stats (daily only) -->
       <div class="sidebar-section quick-stats" id="quick-stats-section">
         <h3 data-i18n="quick_stats_title">當日彙整指標</h3>
         <div class="stat-card mini">
@@ -115,17 +103,12 @@
           <span class="value" id="mini-cost">-</span>
         </div>
         <div class="stat-card mini">
-          <span class="label" data-i18n="stat_api_duration">累積 API 耗時</span>
+          <span class="label" data-i18n="stat_api_duration">累積時間</span>
           <span class="value" id="mini-duration">-</span>
-        </div>
-        <div class="stat-card mini">
-          <span class="label" data-i18n="stat_total_requests">總請求次數</span>
-          <span class="value" id="mini-requests">-</span>
         </div>
       </div>
     </aside>
 
-    <!-- Main Content Area -->
     <main class="app-main">
       <header class="main-header">
         <div class="header-title-container" style="display: flex; align-items: center; gap: 16px;">
@@ -137,7 +120,7 @@
               <span class="title-icon">📅</span>
               <span class="title-text" data-i18n="select_date_prompt">請選擇日期以載入數據</span>
             </h2>
-            <p class="description" data-i18n="header_description">監控您本地每天使用 GitHub Copilot CLI 的 Token 與會話詳細數據</p>
+            <p class="description" data-i18n="header_description">監控您本地每天使用 Claude Code 的 Token 與會話詳細數據</p>
           </div>
         </div>
         <div class="header-controls" style="display: flex; align-items: center; gap: 12px;">
@@ -146,21 +129,17 @@
             <option value="en">English</option>
           </select>
           <button id="btn-pricing-sheet" class="setup-guide-btn" data-i18n-title="btn_pricing_sheet" title="費用標準">💰 <span data-i18n="btn_pricing_sheet">費用標準</span></button>
-          <button id="btn-setup-guide" class="setup-guide-btn" data-i18n-title="setup_guide_title" title="前置作業啟用教學">⚙️ <span data-i18n="setup_guide">啟用教學</span></button>
-          <button id="btn-sync-db" class="sync-db-btn" data-i18n-title="sync_db_title" title="立即手動同步日誌檔到 SQLite 資料庫">⚡ <span data-i18n="sync_db">同步資料庫</span></button>
+          <button id="btn-setup-guide" class="setup-guide-btn" data-i18n-title="setup_guide_title" title="啟用教學">⚙️ <span data-i18n="setup_guide">啟用教學</span></button>
+          <button id="btn-sync-db" class="sync-db-btn" data-i18n-title="sync_db_title" title="立即手動同步資料到 SQLite 資料庫">⚡ <span data-i18n="sync_db">同步資料庫</span></button>
           <button id="theme-toggle-btn" class="theme-toggle-btn" title="切換主題">🌞</button>
-          <div class="header-badge" id="copilot-version-badge">Version --</div>
+          <div class="header-badge" id="copilot-version-badge">--</div>
         </div>
       </header>
 
-      <!-- Daily View Container -->
       <div id="daily-view-container">
-        <!-- Empty State Placeholder -->
         <div id="empty-state-container" class="hidden"></div>
 
-        <!-- Dashboard Grid: Statistics & Charts -->
         <section class="dashboard-grid">
-          <!-- Metric Cards -->
           <div class="stat-card highlight">
             <div class="card-icon">⚡</div>
             <div class="stat-info">
@@ -189,11 +168,11 @@
           </div>
 
           <div class="stat-card">
-            <div class="card-icon">💡</div>
+            <div class="card-icon">💾</div>
             <div class="stat-info">
-              <span class="label" data-i18n="reasoning_tokens_label">推理 Token</span>
-              <span class="value" id="stat-reasoning-tokens">0</span>
-              <span class="sub-label" id="stat-reasoning-pct">佔比: 0%</span>
+              <span class="label" data-i18n="cache_creation_tokens_label">快取建立 Token</span>
+              <span class="value" id="stat-cache-creation-tokens">0</span>
+              <span class="sub-label" id="stat-cache-creation-pct">佔比: 0%</span>
             </div>
           </div>
 
@@ -207,7 +186,6 @@
           </div>
         </section>
 
-        <!-- Charts Section -->
         <section class="charts-section">
           <div class="chart-container glass-card">
             <h3 data-i18n="chart_daily_title">Token 消耗趨勢與快取狀況</h3>
@@ -217,7 +195,6 @@
           </div>
         </section>
 
-        <!-- Session List Section -->
         <section class="sessions-section glass-card">
           <div class="section-header">
             <h3 data-i18n="sessions_table_title">今日會話列表 (Sessions)</h3>
@@ -227,17 +204,17 @@
             <table class="premium-table">
               <thead>
                 <tr>
-                  <th class="sortable" data-sort="session_name"><span data-i18n="col_session">會話</span> <span class="sort-icon"></span></th>
+                  <th class="sortable" data-sort="first_prompt"><span data-i18n="col_session">會話</span> <span class="sort-icon"></span></th>
                   <th class="sortable" data-sort="model"><span data-i18n="col_model">Model</span> <span class="sort-icon"></span></th>
-                  <th class="sortable" data-sort="max_turn_no"><span data-i18n="col_turns">Turn 數</span> <span class="sort-icon"></span></th>
+                  <th class="sortable" data-sort="user_message_count"><span data-i18n="col_turns">Turn 數</span> <span class="sort-icon"></span></th>
                   <th class="sortable" data-sort="total_input_tokens"><span data-i18n="col_input">輸入</span> <span class="sort-icon"></span></th>
                   <th class="sortable" data-sort="total_output_tokens"><span data-i18n="col_output">輸出</span> <span class="sort-icon"></span></th>
-                  <th class="sortable" data-sort="total_reasoning_tokens"><span data-i18n="col_reasoning">推理</span> <span class="sort-icon"></span></th>
-                  <th class="sortable" data-sort="total_cache_read_tokens"><span data-i18n="col_cache">快取</span> <span class="sort-icon"></span></th>
+                  <th class="sortable" data-sort="total_cache_creation_tokens"><span data-i18n="col_cache_creation">快取建立</span> <span class="sort-icon"></span></th>
+                  <th class="sortable" data-sort="total_cache_read_tokens"><span data-i18n="col_cache">快取讀取</span> <span class="sort-icon"></span></th>
                   <th class="sortable" data-sort="total_tokens"><span data-i18n="col_total">總計</span> <span class="sort-icon"></span></th>
                   <th class="sortable" data-sort="cost_usd"><span data-i18n="col_cost">估算費用</span> <span class="sort-icon"></span></th>
-                  <th class="sortable" data-sort="duration_ms"><span data-i18n="col_duration">耗時</span> <span class="sort-icon"></span></th>
-                  <th class="sortable" data-sort="timestamp"><span data-i18n="col_time">時間</span> <span class="sort-icon"></span></th>
+                  <th class="sortable" data-sort="duration_minutes"><span data-i18n="col_duration">時長</span> <span class="sort-icon"></span></th>
+                  <th class="sortable" data-sort="start_time"><span data-i18n="col_time">時間</span> <span class="sort-icon"></span></th>
                 </tr>
               </thead>
               <tbody id="session-list-body">
@@ -250,9 +227,7 @@
         </section>
       </div>
 
-      <!-- Monthly View Container (hidden by default) -->
       <div id="monthly-view-container" class="hidden">
-        <!-- Monthly Metrics Grid -->
         <section class="dashboard-grid">
           <div class="stat-card highlight">
             <div class="card-icon">📆</div>
@@ -286,7 +261,7 @@
             <div class="stat-info">
               <span class="label" data-i18n="monthly_sessions_label">月總會話數</span>
               <span class="value" id="monthly-stat-sessions">0</span>
-              <span class="sub-label" id="monthly-stat-requests">總請求: 0 次</span>
+              <span class="sub-label" id="monthly-stat-duration">累積時長: 0</span>
             </div>
           </div>
 
@@ -300,7 +275,6 @@
           </div>
         </section>
 
-        <!-- Monthly Charts Section -->
         <section class="charts-section">
           <div class="chart-container glass-card">
             <h3 data-i18n="chart_monthly_title">單月每日 Token 消耗與會話數趨勢</h3>
@@ -310,9 +284,7 @@
           </div>
         </section>
 
-        <!-- Monthly Breakdown Grid -->
         <section class="monthly-breakdown-grid">
-          <!-- Top Projects -->
           <div class="glass-card">
             <div class="section-header">
               <h3 style="margin-bottom: 0px;" data-i18n="monthly_projects_title">🏢 最常活動的專案目錄</h3>
@@ -322,7 +294,7 @@
                 <thead>
                   <tr>
                     <th data-i18n="col_rank">排名</th>
-                    <th data-i18n="col_project_cwd">工作路徑 (CWD)</th>
+                    <th data-i18n="col_project_path">專案路徑</th>
                     <th data-i18n="col_sessions_count">會話數</th>
                     <th data-i18n="col_total">總 Token</th>
                   </tr>
@@ -336,7 +308,6 @@
             </div>
           </div>
 
-          <!-- Top Models -->
           <div class="glass-card">
             <div class="section-header">
               <h3 style="margin-bottom: 0px;" data-i18n="monthly_models_title">🤖 使用的模型佔比</h3>
@@ -359,9 +330,9 @@
                 </tbody>
               </table>
             </div>
+          </div>
         </section>
 
-        <!-- Monthly Daily Summary -->
         <section class="monthly-daily-summary-section" style="margin-top: 24px;">
           <div class="glass-card">
             <div class="section-header">
@@ -374,8 +345,8 @@
                     <th class="sortable" data-sort="date" data-table="monthly"><span data-i18n="col_date">日期</span> <span class="sort-icon"></span></th>
                     <th class="sortable" data-sort="input" data-table="monthly"><span data-i18n="col_input">輸入</span> <span class="sort-icon"></span></th>
                     <th class="sortable" data-sort="output" data-table="monthly"><span data-i18n="col_output">輸出</span> <span class="sort-icon"></span></th>
-                    <th class="sortable" data-sort="reasoning" data-table="monthly"><span data-i18n="col_reasoning">推理</span> <span class="sort-icon"></span></th>
-                    <th class="sortable" data-sort="cache" data-table="monthly"><span data-i18n="col_cache">快取</span> <span class="sort-icon"></span></th>
+                    <th class="sortable" data-sort="cache_creation" data-table="monthly"><span data-i18n="col_cache_creation">快取建立</span> <span class="sort-icon"></span></th>
+                    <th class="sortable" data-sort="cache" data-table="monthly"><span data-i18n="col_cache">快取讀取</span> <span class="sort-icon"></span></th>
                     <th class="sortable" data-sort="total" data-table="monthly"><span data-i18n="col_total">總計</span> <span class="sort-icon"></span></th>
                     <th class="sortable" data-sort="cost" data-table="monthly"><span data-i18n="col_cost">估算費用</span> <span class="sort-icon"></span></th>
                   </tr>
@@ -393,7 +364,7 @@
     </main>
   </div>
 
-  <!-- Session Timeline Modal / Drawer -->
+  <!-- Session Timeline Drawer -->
   <div class="drawer-overlay" id="timeline-drawer">
     <div class="drawer-content">
       <div class="drawer-header">
@@ -406,19 +377,10 @@
       </div>
 
       <div class="drawer-body">
-        <!-- Session Metadata Cards -->
         <div class="session-meta-grid">
           <div class="meta-item span-2">
-            <span class="lbl" data-i18n="drawer_cwd">工作路徑</span>
+            <span class="lbl" data-i18n="drawer_project_path">專案路徑</span>
             <span class="val" id="meta-cwd">-</span>
-          </div>
-          <div class="meta-item">
-            <span class="lbl" data-i18n="drawer_repo">專案庫</span>
-            <span class="val" id="meta-repo">-</span>
-          </div>
-          <div class="meta-item">
-            <span class="lbl" data-i18n="drawer_branch">Git 分支</span>
-            <span class="val" id="meta-branch">-</span>
           </div>
           <div class="meta-item span-2">
             <span class="lbl" data-i18n="drawer_model">Model</span>
@@ -426,7 +388,6 @@
           </div>
         </div>
 
-        <!-- Session Token Stats Cards -->
         <div class="session-stats-grid">
           <div class="meta-item stat-item">
             <span class="lbl" data-i18n="drawer_input">輸入</span>
@@ -437,16 +398,12 @@
             <span class="val" id="meta-output">-</span>
           </div>
           <div class="meta-item stat-item">
-            <span class="lbl" data-i18n="drawer_reasoning">推理</span>
-            <span class="val" id="meta-reasoning">-</span>
+            <span class="lbl" data-i18n="drawer_cache_creation">快取建立</span>
+            <span class="val" id="meta-cache-creation">-</span>
           </div>
           <div class="meta-item stat-item">
-            <span class="lbl" data-i18n="drawer_cache">快取</span>
+            <span class="lbl" data-i18n="drawer_cache">快取讀取</span>
             <span class="val" id="meta-cache">-</span>
-          </div>
-          <div class="meta-item stat-item">
-            <span class="lbl" data-i18n="drawer_compaction">壓縮次數</span>
-            <span class="val" id="meta-compaction">-</span>
           </div>
           <div class="meta-item stat-item highlight">
             <span class="lbl" data-i18n="drawer_total">總計</span>
@@ -454,9 +411,7 @@
           </div>
         </div>
 
-        <!-- Reconstructed Timeline -->
         <div class="timeline-container" id="timeline-items">
-          <!-- Timeline bubbles will be dynamically rendered here -->
         </div>
       </div>
     </div>
@@ -467,93 +422,43 @@
     <div class="modal-content">
       <div class="modal-header">
         <div class="modal-title-group">
-          <h2 data-i18n="setup_modal_title">⚙️ GitHub Copilot CLI 前置設定與啟用教學</h2>
+          <h2 data-i18n="setup_modal_title">⚙️ Claude Code Token Insights 啟用教學</h2>
         </div>
         <button class="close-btn" id="close-setup-modal-btn">&times;</button>
       </div>
       <div class="modal-body">
         <div class="modal-text">
-          <p data-i18n="setup_modal_intro">本 Dashboard 主要是解析並呈現 GitHub Copilot CLI 的 <strong>Status Line (狀態列)</strong> 所收集的 Token 數據。我們將使用 <code>~/.copilot/statusline-token.sh</code> 進行每日數據統計與會話紀錄。</p>
+          <p data-i18n="setup_modal_intro">本 Dashboard 自動從 <code>~/.claude/</code> 讀取 Claude Code 的原生 session 資料，無需額外設定 hook 或腳本。</p>
         </div>
 
         <div class="modal-section">
-          <h3 data-i18n="setup_step_1"><span>1️⃣</span> 1. 確認 script 有執行權限</h3>
-          <p class="modal-text" data-i18n="setup_step_1_desc">首先建立設定目錄，並將專案中的收集腳本複製至家目錄的 <code>.copilot</code> 目錄下，最後賦予執行權限：</p>
+          <h3 data-i18n="setup_step_1"><span>1️⃣</span> 1. 安裝 Rust</h3>
+          <p class="modal-text" data-i18n="setup_step_1_desc">確保您的系統已安裝 Rust。若尚未安裝，請執行：</p>
           <div class="code-block-container">
             <button class="copy-code-btn" data-i18n="btn_copy_cmd" title="複製指令">📋 複製指令</button>
-            <pre><code id="code-setup-cmd">mkdir -p ~/.copilot && cp shell/statusline-token.sh ~/.copilot/statusline-token.sh && chmod +x ~/.copilot/statusline-token.sh</code></pre>
+            <pre><code>curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</code></pre>
           </div>
         </div>
 
         <div class="modal-section">
-          <h3 data-i18n="setup_step_2"><span>2️⃣</span> 2. 編輯設定檔</h3>
-          <p class="modal-text" data-i18n="setup_step_2_desc">編輯或新增 Copilot CLI 的設定檔 <code>~/.copilot/settings.json</code>：</p>
-          <div class="code-block-container" style="margin-bottom: 8px;">
-            <button class="copy-code-btn" data-i18n="btn_copy_cmd" title="複製指令">📋 複製指令</button>
-            <pre><code>nano ~/.copilot/settings.json</code></pre>
-          </div>
-          <p class="modal-text" data-i18n="setup_step_2_desc2">在設定檔中加入以下 <code>statusLine</code> 設定內容：</p>
+          <h3 data-i18n="setup_step_2"><span>2️⃣</span> 2. 啟動 Dashboard</h3>
+          <p class="modal-text" data-i18n="setup_step_2_desc">在專案目錄下執行：</p>
           <div class="code-block-container">
-            <button class="copy-code-btn" id="btn-copy-json" data-i18n="btn_copy_config" title="複製配置">📋 複製配置 JSON</button>
-            <pre><code id="code-setup-json">{
-  "statusLine": {
-    "type": "command",
-    "command": "/home/<username>/.copilot/statusline-token.sh",
-    "padding": 1
-  }
-}</code></pre>
+            <button class="copy-code-btn" data-i18n="btn_copy_cmd" title="複製指令">📋 複製指令</button>
+            <pre><code>cargo run</code></pre>
+          </div>
+        </div>
+
+        <div class="modal-section">
+          <h3 data-i18n="setup_step_3"><span>3️⃣</span> 3. 開啟瀏覽器</h3>
+          <p class="modal-text" data-i18n="setup_step_3_desc">在瀏覽器中開啟：</p>
+          <div class="code-block-container">
+            <button class="copy-code-btn" data-i18n="btn_copy_cmd" title="複製指令">📋 複製指令</button>
+            <pre><code>http://localhost:3000</code></pre>
           </div>
           <div style="margin-top: 10px; padding: 12px; background: rgba(0, 242, 254, 0.05); border-left: 3px solid var(--accent-cyan); border-radius: 4px;" class="modal-text">
-            <strong data-i18n="setup_home_hint_title">💡 Home 目錄路徑提示：</strong><br>
-            <span data-i18n="setup_home_hint_desc">如果您的 <code>$HOME</code> 家目錄不是 <code id="lbl-detected-home">/home/&lt;username&gt;</code>，可在終端機執行 
-            <code style="background: rgba(255,255,255,0.15)">echo $HOME</code> 查詢您的家目錄路徑，並對應修改 <code>command</code> 欄位的值。</span>
-          </div>
-        </div>
-
-        <div class="modal-section">
-          <h3 data-i18n="setup_step_3"><span>3️⃣</span> 3. 已經有其他設定時（不要覆蓋）</h3>
-          <p class="modal-text" data-i18n="setup_step_3_desc">若您的 <code>settings.json</code> 中已經有其他現成設定，<strong>請勿整檔覆蓋</strong>，只需將 <code>statusLine</code> 屬性合併加入即可，例如：</p>
-          <div class="code-block-container">
-            <button class="copy-code-btn" id="btn-copy-json-merge" data-i18n="btn_copy_merge_example" title="複製合併範例">📋 複製合併範例</button>
-            <pre><code id="code-setup-json-merge">{
-  "footer": {
-    "showDirectory": true,
-    "showBranch": true
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "/home/<username>/.copilot/statusline-token.sh",
-    "padding": 1
-  }
-}</code></pre>
-          </div>
-        </div>
-
-        <div class="modal-section">
-          <h3 data-i18n="setup_step_4"><span>4️⃣</span> 4. 重開 Copilot CLI</h3>
-          <p class="modal-text" data-i18n="setup_step_4_desc">設定完成並存檔後，請<strong>退出目前的 Copilot CLI 聊天會話，並重新進入</strong>以套用全新設定。</p>
-        </div>
-
-        <div class="modal-section">
-          <h3 data-i18n="setup_step_5"><span>5️⃣</span> 5. 檢查是否成功</h3>
-          <p class="modal-text" data-i18n="setup_step_5_desc">進入 Copilot CLI 會話聊天後，畫面底部應該會看到由本專案腳本收集並精緻渲染出的狀態列，如：</p>
-          <div class="code-block-container" style="background: rgba(255,255,255,0.02);">
-            <pre style="color: var(--neon-green);"><code>🤖 Auto → GPT-5.3-Codex • #1 • ↑ 22.8k • c 22.0k/0 • ↓ 61 • r 29 • total 22.9k • +22.9k • last 22.8k/61 • ctx 9%</code></pre>
-          </div>
-          
-          <div style="margin-top: 10px;" class="modal-text">
-            <strong data-i18n="setup_troubleshooting">⚠️ 除錯與檢查 (Troubleshooting)：</strong>
-            <p style="margin-top: 6px; margin-left: 12px;" data-i18n="setup_troubleshoot_a">🔍 <strong>A. 若狀態列未正常出現，請先單獨測試腳本是否能正常執行：</strong></p>
-            <div class="code-block-container" style="margin-left: 12px; margin-top: 4px;">
-              <button class="copy-code-btn" data-i18n="btn_copy_cmd" title="複製">📋 複製</button>
-              <pre><code>echo '{}' | ~/.copilot/statusline-token.sh</code></pre>
-            </div>
-            
-            <p style="margin-top: 8px; margin-left: 12px;" data-i18n="setup_troubleshoot_b">🔍 <strong>B. 請確認 <code>settings.json</code> 是合法的 JSON 格式：</strong></p>
-            <div class="code-block-container" style="margin-left: 12px; margin-top: 4px;">
-              <button class="copy-code-btn" data-i18n="btn_copy_cmd" title="複製">📋 複製</button>
-              <pre><code>jq . ~/.copilot/settings.json</code></pre>
-            </div>
+            <strong data-i18n="setup_data_hint_title">💡 資料來源說明：</strong><br>
+            <span data-i18n="setup_data_hint_desc">Dashboard 自動從 <code id="lbl-detected-claude-dir">~/.claude/</code> 讀取資料。若您的 Claude Code 資料存放在其他位置，可設定 <code>CLAUDE_DIR</code> 環境變數指定路徑。</span>
           </div>
         </div>
       </div>
@@ -565,7 +470,7 @@
     <div class="modal-content" style="max-width: 800px;">
       <div class="modal-header">
         <div class="modal-title-group">
-          <h2 data-i18n="pricing_sheet_title">💰 GitHub Copilot 費用標準表</h2>
+          <h2 data-i18n="pricing_sheet_title">💰 Anthropic Claude Code 費用標準表</h2>
         </div>
         <button class="close-btn" id="close-pricing-modal-btn">&times;</button>
       </div>
@@ -580,10 +485,10 @@
                 <th>模型名稱 (Model Name)</th>
                 <th>部署類型 (Type)</th>
                 <th>單位 (Unit)</th>
-                <th>輸入價格 (Input Price)</th>
-                <th>快取輸入價格 (Cached Input)</th>
-                <th>輸出價格 (Output Price)</th>
-                <th>批次 API 價格 (Batch API)</th>
+                <th>輸入價格 (Input)</th>
+                <th>快取讀取 (Cache Read)</th>
+                <th>快取建立 (Cache Write)</th>
+                <th>輸出價格 (Output)</th>
               </tr>
             </thead>
             <tbody id="pricing-table-body">
@@ -597,7 +502,6 @@
     </div>
   </div>
 
-  <!-- Frontend Javascript logic -->
   <script src="/static/app.js"></script>
 </body>
 </html>
