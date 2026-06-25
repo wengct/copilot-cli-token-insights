@@ -4,6 +4,52 @@
 
 This is a local token consumption and session analysis dashboard designed specifically for **GitHub Copilot CLI**. Powered by a high-performance **Rust (Axum)** backend and a beautiful **dark glassmorphic (Glassmorphism)** frontend, it helps you easily monitor daily token cache hit rates, reasoning token consumption, and **reconstruct/restore the historical conversation timeline of every session**!
 
+## 🤖 Agent Quick Start Prompt
+If you want another AI agent or automation flow to set this up quickly, paste this more complete prompt:
+
+```text
+Please install and launch GitHub Copilot CLI Token Insights Dashboard in this environment using the local-first workflow described in this README.
+
+Goal:
+- Install and start this Rust/Axum project locally.
+- Configure GitHub Copilot CLI statusLine so it writes token usage data into the local ~/.copilot directory.
+- Confirm the dashboard is available at http://localhost:3000.
+
+Please complete the following steps in order:
+1. Confirm that the current working directory is the project root and that shell/statusline-token.sh exists.
+2. Verify that the Rust toolchain is installed; if not, install it with rustup.
+3. Run cargo build --release to build the release binary.
+4. Create or confirm that ~/.copilot exists, then copy shell/statusline-token.sh to ~/.copilot/statusline-token.sh.
+5. Make the script executable with chmod +x ~/.copilot/statusline-token.sh.
+6. Update ~/.copilot/settings.json:
+   - If the file does not exist, create a new JSON file whose top-level value is a valid JSON object and include a statusLine block.
+   - If it already exists, preserve the existing settings and merge the statusLine block into it; keep the original JSON structure intact and do not turn it into an array or another non-object format.
+   - The statusLine command should point to ~/.copilot/statusline-token.sh using the actual home directory path (for example, from echo $HOME).
+   - Be careful with the JSON structure: the top level must be an object `{}`, `statusLine` must also be an object, and the file must remain valid JSON with proper commas and quotes.
+   - Example `statusLine` configuration:
+     ```json
+     {
+       "statusLine": {
+         "type": "command",
+         "command": "$HOME/.copilot/statusline-token.sh",
+         "padding": 1
+       }
+     }
+     ```
+7. Validate the setup:
+   - Run echo '{}' | ~/.copilot/statusline-token.sh to confirm the script executes successfully.
+   - Run jq . ~/.copilot/settings.json, or use python -m json.tool if jq is unavailable, to verify the JSON is valid.
+8. Restart Copilot CLI or open a fresh Copilot CLI session so the statusLine configuration takes effect.
+9. Return to the project root and run cargo run to start the dashboard.
+10. Confirm that the terminal output includes http://localhost:3000 and that the URL is reachable in a browser.
+11. If a custom Copilot data directory is used, set COPILOT_DIR before launching the app so it points to the correct .copilot folder.
+
+Notes:
+- This project is local-first; do not assume any remote API or external service.
+- If any step fails, stop and report the exact error message and the command that failed.
+- After completion, provide a short summary including whether startup succeeded, whether the URL is reachable, and any caveats.
+```
+
 ---
 
 ## 🌟 Features
@@ -75,7 +121,7 @@ For a **brand new configuration**, paste the following:
 {
   "statusLine": {
     "type": "command",
-    "command": "/home/<username>/.copilot/statusline-token.sh",
+    "command": "$HOME/.copilot/statusline-token.sh",
     "padding": 1
   }
 }
@@ -89,13 +135,13 @@ If you **already have existing configurations**, merge the `statusLine` block in
   },
   "statusLine": {
     "type": "command",
-    "command": "/home/<username>/.copilot/statusline-token.sh",
+    "command": "$HOME/.copilot/statusline-token.sh",
     "padding": 1
   }
 }
 ```
 > [!NOTE]
-> **Home Directory Hint**: Replace `/home/<username>` with your actual home directory path (run `echo $HOME` in terminal to check it).
+> **Home Directory Hint**: Replace the `command` value with `$HOME` or your actual home directory path (run `echo $HOME` in terminal to check it).
 
 #### 4️⃣ Restart & Verify
 1. **Restart Copilot CLI**: Exit the current Copilot CLI session and re-enter to apply the new settings.

@@ -4,6 +4,52 @@
 
 這是一個專門為 **GitHub Copilot CLI** 設計的本地 Token 消耗與會話分析看板。使用高效能的 **Rust (Axum)** 作為後端，搭配 **深色毛玻璃風格 (Glassmorphism)** 前端，協助您輕鬆查看每日的 Token 快取命中率、推理 Token 消耗，並能**重建與還原每個會話 (Session) 的歷史對話時間軸**！
 
+## 🤖 給 Agent / 自動化流程的安裝提示
+如果您想讓另一個 AI Agent 或自動化工具快速完成安裝，請直接貼上以下更完整的提示詞：
+
+```text
+請在這個環境中安裝並啟動 GitHub Copilot CLI Token Insights Dashboard，並以本地流程完成設定。
+
+工作目標：
+- 安裝並啟動這個 Rust/Axum 專案。
+- 配置 GitHub Copilot CLI 的 statusLine，讓它把 token 使用資訊寫入本地 ~/.copilot 資料夾。
+- 確認看板可在 http://localhost:3000 正常開啟。
+
+請依序完成以下步驟：
+1. 先確認目前工作目錄是這個專案的根目錄，並確認檔案 shell/statusline-token.sh 存在。
+2. 確認 Rust 工具鏈已安裝；若沒有，請使用 rustup 安裝。
+3. 執行 cargo build --release，建立 Release 版本二進位檔。
+4. 建立或確認 ~/.copilot 目錄存在，並將 shell/statusline-token.sh 複製到 ~/.copilot/statusline-token.sh。
+5. 賦予該腳本可執行權限：chmod +x ~/.copilot/statusline-token.sh。
+6. 更新 ~/.copilot/settings.json：
+   - 若檔案不存在，建立一個新的 JSON 檔案，內容必須是合法的 JSON 物件，並加入 statusLine 設定。
+   - 若檔案已存在，請保留原有設定，並將 statusLine 區塊合併進去；請務必維持原本的 JSON 結構，不要把現有設定改成陣列或其他非物件格式。
+   - statusLine 的 command 應指向 ~/.copilot/statusline-token.sh，請使用實際的家目錄路徑（可由 echo $HOME 取得）。
+   - 請注意 JSON 的正確結構：外層必須是 `{}` 物件，`statusLine` 也是一個物件，不能漏掉逗號或引號，且不要產生無效的 JSON。
+   - 可參考的 `statusLine` 設定範例：
+     ```json
+     {
+       "statusLine": {
+         "type": "command",
+         "command": "$HOME/.copilot/statusline-token.sh",
+         "padding": 1
+       }
+     }
+     ```
+7. 驗證設定是否有效：
+   - 執行 echo '{}' | ~/.copilot/statusline-token.sh，確認腳本可正常執行。
+   - 執行 jq . ~/.copilot/settings.json（若 jq 不存在，請改用 python -m json.tool 檢查 JSON 格式）。
+8. 重新啟動 Copilot CLI 或開啟新的 Copilot CLI 會話，讓 statusLine 設定生效。
+9. 回到專案根目錄，執行 cargo run 啟動看板服務。
+10. 確認終端輸出包含 http://localhost:3000，並在瀏覽器確認該網址可存取。
+11. 如果使用了自訂 Copilot 資料路徑，請在啟動前設定 COPILOT_DIR 環境變數，並確保它指向正確的 ~/.copilot 或自訂 .copilot 路徑。
+
+注意事項：
+- 這個專案以本地資料為主，請不要假設會使用遠端 API 或外部服務。
+- 若有任何步驟失敗，請停止並回報具體錯誤訊息與你執行的指令。
+- 完成後請提供簡短摘要，包含是否成功啟動、網址是否可訪問，以及任何需要注意的事項。
+```
+
 ---
 
 ## 🌟 功能說明 (Features)
@@ -75,7 +121,7 @@ nano ~/.copilot/settings.json
 {
   "statusLine": {
     "type": "command",
-    "command": "/home/<username>/.copilot/statusline-token.sh",
+    "command": "$HOME/.copilot/statusline-token.sh",
     "padding": 1
   }
 }
@@ -89,13 +135,13 @@ nano ~/.copilot/settings.json
   },
   "statusLine": {
     "type": "command",
-    "command": "/home/<username>/.copilot/statusline-token.sh",
+    "command": "$HOME/.copilot/statusline-token.sh",
     "padding": 1
   }
 }
 ```
 > [!NOTE]
-> **家目錄路徑提示**：請將 `/home/<username>` 替換為您的實際家目錄路徑（可在終端機執行 `echo $HOME` 來查詢）。
+> **家目錄路徑提示**：請將 `$HOME`（或您的實際家目錄路徑）替換到 `command` 欄位中；您也可以在終端機執行 `echo $HOME` 來查詢目前的家目錄。
 
 #### 4️⃣ 重新啟動與驗證
 1. **重啟 Copilot CLI**：退出目前的 Copilot CLI 會話並重新開啟以套用新設定。
